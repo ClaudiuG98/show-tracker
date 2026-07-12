@@ -170,13 +170,6 @@ export function buildImportPreview(
   const imdbOnly = analysis.records.filter((record) => record.kind === "imdb_only" && record.provider);
   const finished = imdbOnly.filter((record) => classifyOnboardingShow(onboardingShow(record), onboardingTiming) === "finished");
   const active = imdbOnly.filter((record) => !finished.includes(record));
-  const hasUnresolvedRecords = analysis.report.unmatchedShows > 0
-    || analysis.report.unresolvedEpisodes > 0
-    || analysis.report.numberingConflicts.length > 0;
-  if (hasUnresolvedRecords && !decisions.unresolvedReviewed) {
-    missingDecisions.push("Review and acknowledge the unmatched shows and unresolved episode mappings.");
-  }
-
   for (const record of analysis.records.filter((item) => item.kind === "conflict")) {
     if (!decisions.excludedConflictRecordIds.includes(record.id)) {
       missingDecisions.push(`Choose to exclude the unresolved ID conflict for ${record.imdb?.title ?? record.tvtime?.title ?? record.id}.`);
@@ -184,17 +177,12 @@ export function buildImportPreview(
   }
 
   const tvTimeOnly = analysis.records.filter((record) => record.kind === "tvtime_only" && record.provider);
-  if (!analysis.fixtureSubsetMode && tvTimeOnly.length > 0 && !decisions.tvTimeOnlyReviewed) {
-    missingDecisions.push("Review whether TV Time-only shows should be included.");
-  }
 
   for (const record of analysis.records.filter((item) => item.kind === "matched" && item.provider && item.tvtime)) {
     plans.push(createPlan(record, tvTimeState(record, analysis, local), record.progress?.states ?? []));
   }
   for (const record of tvTimeOnly) {
-    if (analysis.fixtureSubsetMode || decisions.includeTvTimeOnlyRecordIds.includes(record.id)) {
-      plans.push(createPlan(record, tvTimeState(record, analysis, local), record.progress?.states ?? []));
-    }
+    plans.push(createPlan(record, tvTimeState(record, analysis, local), record.progress?.states ?? []));
   }
 
   const finishedWithoutOverride = finished.filter((record) => !decisions.progressChoices[record.id]);

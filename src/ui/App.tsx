@@ -90,9 +90,16 @@ export function ShowDetail({ tracker }: { tracker: Tracker }) {
   const show = tracker.local?.shows.find((candidate) => candidate.id === id);
   if (!show || !tracker.domain) return <Empty title="Show not found">It may have been removed from this tracker.</Empty>;
   const provider = providerFor(tracker.domain, show), poster = posterUrls(provider), seasons = groupRegularEpisodesBySeason(tracker.domain, show, tracker.now);
+  const imdbId = show.externalIds.imdb ?? provider?.externalIds.imdb;
+  const startYear = provider?.premiered?.slice(0, 4), endYear = provider?.ended?.slice(0, 4);
+  const yearRange = startYear ? (endYear && endYear !== startYear ? `${startYear}–${endYear}` : startYear) : undefined;
+  const platform = provider?.webChannelName ?? provider?.networkName;
   const orderedEpisodes = seasons.flatMap((season) => season.episodes);
   const watched = new Set(tracker.local?.progress.filter((item) => item.localShowId === show.id && item.watched).map((item) => item.tvmazeEpisodeId));
   const allAired = seasons.flatMap((season) => season.episodes).filter((episode) => getEpisodeAvailability(episode, tracker.now, tracker.domain!.settings.timezone, tracker.domain!.settings.dateOnlyReleaseHour) === "available").map((episode) => episode.id);
+  const watchedAired = allAired.filter((episodeId) => watched.has(episodeId)), backlog = orderedEpisodes.filter((episode) => allAired.includes(episode.id) && !watched.has(episode.id));
+  const nextAired = backlog[0], nextFutureEpisode = librarySummary(tracker.domain, show, tracker.now).nextFuture;
+  const progressPercent = allAired.length ? Math.round((watchedAired.length / allAired.length) * 100) : 0;
   const remove = async () => { if (!window.confirm(`Remove ${show.titleSnapshot} and its local progress?`)) return; await tracker.removeShow(show.id); navigate("/library"); };
   const chooseEpisode = (episode: ProviderEpisode, isWatched: boolean) => {
     if (isWatched) { setPreviousPrompt(undefined); void tracker.markEpisode(show, episode.id, false); return; }
@@ -108,12 +115,25 @@ export function ShowDetail({ tracker }: { tracker: Tracker }) {
   };
   return <>
     <a className="back-link" href="#/library">← Back to Library</a>
-    <section className="show-hero"><Poster title={show.titleSnapshot} {...poster} size="detail"/><div><p className="eyebrow">Show details</p><h1>{show.titleSnapshot}</h1><div className="badges"><span className="badge accent">{stateLabel(show.userState)}</span><span className="badge">{stateLabel(provider?.status ?? "metadata unavailable")}</span></div><TvMazeAttribution/><div className="show-actions">
+    <section className="show-hero"><div className="hero-poster"><Poster title={show.titleSnapshot} {...poster} size="detail"/>{imdbId && <a className="imdb-poster-link" href={`https://www.imdb.com/title/${encodeURIComponent(imdbId)}/`} target="_blank" rel="noreferrer" aria-label={`Open ${show.titleSnapshot} on IMDb`} title="Open on IMDb"><span aria-hidden="true">↗</span></a>}</div><div className="hero-copy"><p className="eyebrow">Show details</p><h1>{show.titleSnapshot}</h1><div className="badges"><span className="badge accent">{stateLabel(show.userState)}</span><span className="badge">{stateLabel(provider?.status ?? "metadata unavailable")}</span></div>
+      {(yearRange || provider?.rating != null || provider?.runtimeMinutes || platform) && <dl className="show-facts" aria-label="Show information">
+        {yearRange && <div><dt>Years</dt><dd>{yearRange}</dd></div>}
+        {provider?.rating != null && <div><dt>TVMaze rating</dt><dd><span aria-hidden="true">★</span> {provider.rating.toFixed(1)} / 10</dd></div>}
+        {provider?.runtimeMinutes && <div><dt>Episode length</dt><dd>{provider.runtimeMinutes} min</dd></div>}
+        {platform && <div><dt>{provider?.webChannelName ? "Streaming on" : "Network"}</dt><dd>{platform}</dd></div>}
+      </dl>}
+      {(provider?.genres?.length || provider?.showType || provider?.language) && <div className="show-metadata-line">{provider.genres?.map((genre) => <span className="genre" key={genre}>{genre}</span>)}{provider.showType && <span>{provider.showType}</span>}{provider.language && <span>{provider.language}</span>}</div>}
+      <TvMazeAttribution/><div className="show-actions">
       <button className="primary" onClick={() => void tracker.markCaughtUp(show, allAired, provider?.status === "ended" ? "completed" : "caught_up")}>Mark caught up</button>
       <button onClick={() => void tracker.setShowState(show.id, "not_started")}>Set as not started</button>
       {show.userState === "paused" ? <button onClick={() => void tracker.setShowState(show.id, "watching")}>Resume</button> : <button onClick={() => void tracker.setShowState(show.id, "paused")}>Pause</button>}
       <button className="danger" onClick={() => void remove()}>Remove from tracker</button>
     </div></div></section>
+    <section className="show-overview" aria-label="Show progress and next episodes">
+      <article className="progress-overview"><p className="eyebrow">Aired progress</p><div className="progress-heading"><h2>{watchedAired.length} / {allAired.length}</h2><strong>{progressPercent}%</strong></div><progress max={Math.max(allAired.length, 1)} value={watchedAired.length} aria-label={`${watchedAired.length} of ${allAired.length} aired episodes watched`}/><p>{backlog.length === 0 ? "You are caught up with every available episode." : `${backlog.length} aired episode${backlog.length === 1 ? "" : "s"} waiting.`}</p></article>
+      {nextAired ? <article className="next-episode-panel waiting"><p className="eyebrow">Watch next</p><div className="next-episode-copy"><span className="episode-code">{episodeCode(nextAired)}</span><h2>{nextAired.name ?? "Untitled episode"}</h2>{nextAired.runtimeMinutes && <p>{nextAired.runtimeMinutes} min</p>}</div><button className="primary" onClick={() => void tracker.markEpisode(show, nextAired.id, true)}>Mark watched</button></article> : <article className="next-episode-panel caught-up"><p className="eyebrow">Watch next</p><h2>No aired episode waiting</h2><p>{show.userState === "paused" ? "This show is paused." : "You’re caught up for now."}</p></article>}
+      {nextFutureEpisode && (() => { const release = episodeReleaseInstant(nextFutureEpisode, tracker.domain!.settings.timezone, tracker.domain!.settings.dateOnlyReleaseHour); return <article className="next-episode-panel upcoming"><p className="eyebrow">Coming up</p>{release && <strong className="overview-countdown">{releaseCountdown(release, tracker.now)}</strong>}<span className="episode-code">{episodeCode(nextFutureEpisode)}</span><h2>{nextFutureEpisode.name ?? "Title to be announced"}</h2>{release && <time dateTime={release.toISOString()}>{formatInTimeZone(release, tracker.domain!.settings.timezone, nextFutureEpisode.airstamp || nextFutureEpisode.airtime ? "PP · p" : "PP")}</time>}</article>; })()}
+    </section>
     <section className="seasons" aria-label="Seasons">{seasons.map((season, index) => {
       const airedSeasonIds = season.episodes.filter((episode) => getEpisodeAvailability(episode, tracker.now, tracker.domain!.settings.timezone, tracker.domain!.settings.dateOnlyReleaseHour) === "available").map((episode) => episode.id);
       const seasonWatched = airedSeasonIds.length > 0 && airedSeasonIds.every((episodeId) => watched.has(episodeId));
@@ -121,7 +141,7 @@ export function ShowDetail({ tracker }: { tracker: Tracker }) {
         <div className="season-toolbar"><span>{season.available} currently available</span></div>
         <div className="episode-rows">{season.episodes.map((episode) => {
           const availability = getEpisodeAvailability(episode, tracker.now, tracker.domain!.settings.timezone, tracker.domain!.settings.dateOnlyReleaseHour), release = episodeReleaseInstant(episode, tracker.domain!.settings.timezone, tracker.domain!.settings.dateOnlyReleaseHour), prompt = previousPrompt?.episodeId === episode.id ? previousPrompt : undefined, isWatched = watched.has(episode.id) || Boolean(prompt);
-          return <article className={`episode-row ${availability}`} key={episode.id}><div className="episode-number">E{String(episode.number).padStart(2, "0")}</div><div><h3>{episode.name ?? "Untitled episode"}</h3><p><span className={`availability ${availability}`}>{availability}</span>{release ? ` · ${release.toLocaleString()}` : " · Release unknown"}</p></div><div className="episode-actions">
+          return <article className={`episode-row ${availability}`} key={episode.id}><div className="episode-number">E{String(episode.number).padStart(2, "0")}</div><div><h3>{episode.name ?? "Untitled episode"}</h3><p><span className={`availability ${availability}`}>{availability}</span>{release ? ` · ${release.toLocaleString()}` : " · Release unknown"}{episode.runtimeMinutes ? ` · ${episode.runtimeMinutes} min` : ""}</p>{(episode.summary || episode.image || episode.rating != null) && <details className="episode-extra"><summary>Episode details</summary><div>{episode.image && <img src={episode.image.medium ?? episode.image.original} alt="" loading="lazy" decoding="async"/>}<div>{episode.rating != null && <p className="episode-rating"><span aria-hidden="true">★</span> {episode.rating.toFixed(1)} / 10</p>}{episode.summary && <p>{episode.summary}</p>}</div></div></details>}</div><div className="episode-actions">
             {prompt && <div className="previous-panel" role="group" aria-label="Previous unwatched episodes"><p>{prompt.previousIds.length} previous aired episode{prompt.previousIds.length === 1 ? " is" : "s are"} still unwatched.</p><button onClick={() => { setPreviousPrompt(undefined); void tracker.markEpisodes(show, prompt.previousIds); }}>Mark previous episodes</button><button className="panel-close" aria-label="Dismiss" onClick={() => setPreviousPrompt(undefined)}>×</button></div>}
             <button data-episode-toggle={episode.id} className={`episode-toggle ${isWatched ? "checked" : ""}`} aria-label={`${isWatched ? "Mark unwatched" : "Mark watched"}: ${episode.name ?? episodeCode(episode)}`} aria-pressed={isWatched} onClick={() => chooseEpisode(episode, isWatched)}><span aria-hidden="true">✓</span></button>
           </div></article>;

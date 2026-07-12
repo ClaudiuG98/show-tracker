@@ -9,6 +9,7 @@ import {
   type UnresolvedTvTimeEpisode,
 } from "./reconcile";
 import type { TvTimeParseResult, TvTimeShow } from "./tvtime";
+import { expandSplitTvTimeShows } from "./split-show-routes";
 
 export type ImportStage =
   | "select_files"
@@ -156,15 +157,18 @@ function providerError(
 
 export async function analyzeImport(options: AnalyzeImportOptions): Promise<ImportAnalysis> {
   const { selected, provider, settings, onProgress } = options;
+  const tvTimeShows = expandSplitTvTimeShows(selected.tvTimeShows);
   const now = options.now ?? new Date();
   const imdbResults = new Map<string, ProviderShow | null>();
   const tvdbResults = new Map<number, ProviderShow | null>();
   const tvtimeImdbResults = new Map<string, ProviderShow | null>();
+  const directTvmazeResults = new Map<string, ProviderShow | null>();
   const errors: ImportProviderError[] = [];
 
-  const tvTimeImdbIds = new Set(selected.tvTimeShows.flatMap((show) => show.imdbId ? [show.imdbId] : []));
+  const tvTimeImdbIds = new Set(tvTimeShows.flatMap((show) => show.imdbId ? [show.imdbId] : []));
   const lookupTotal = selected.imdbRows.length
-    + selected.tvTimeShows.filter((show) => show.tvdbShowId !== undefined).length
+    + tvTimeShows.filter((show) => show.tvdbShowId !== undefined && show.providerShowId === undefined).length
+    + tvTimeShows.filter((show) => show.providerShowId !== undefined).length
     + [...tvTimeImdbIds].filter((id) => !selected.imdbRows.some((row) => row.imdbId === id)).length;
   let lookupDone = 0;
   onProgress?.({ stage: "resolve_ids", completed: 0, total: lookupTotal, message: "Resolving exact IMDb and TVDB identifiers." });
@@ -179,7 +183,7 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
     }
   }));
 
-  await Promise.all(selected.tvTimeShows.flatMap((show) => show.tvdbShowId === undefined ? [] : [
+  await Promise.all(tvTimeShows.flatMap((show) => show.tvdbShowId === undefined || show.providerShowId !== undefined ? [] : [
     (async () => {
       try {
         tvdbResults.set(show.tvdbShowId!, await provider.lookupByTvdbId(show.tvdbShowId!));
@@ -191,9 +195,17 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
     })(),
   ]));
 
+  await Promise.all(tvTimeShows.flatMap((show) => show.providerShowId === undefined ? [] : [
+    (async () => {
+      try { directTvmazeResults.set(show.uuid, await provider.getShow(show.providerShowId!)); }
+      catch (error) { errors.push(providerError(error, "provider_network_failed", "resolve_ids", show.title)); }
+      finally { onProgress?.({ stage: "resolve_ids", completed: ++lookupDone, total: lookupTotal, message: `Resolved ${lookupDone} of ${lookupTotal} identifiers.` }); }
+    })(),
+  ]));
+
   await Promise.all([...tvTimeImdbIds].flatMap((id) => imdbResults.has(id) ? [] : [
     (async () => {
-      const show = selected.tvTimeShows.find((candidate) => candidate.imdbId === id);
+      const show = tvTimeShows.find((candidate) => candidate.imdbId === id);
       try {
         tvtimeImdbResults.set(id, await provider.lookupByImdbId(id));
       } catch (error) {
@@ -210,7 +222,8 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
   const successfulImdb = new Map([...imdbResults].flatMap(([id, show]) => show ? [[id, show] as const] : []));
   const successfulTvdb = new Map([...tvdbResults].flatMap(([id, show]) => show ? [[id, show] as const] : []));
   const successfulTvtimeImdb = new Map([...tvtimeImdbResults].flatMap(([id, show]) => show ? [[id, show] as const] : []));
-  const reconciled = reconcileShows(selected.imdbRows, selected.tvTimeShows, successfulImdb, successfulTvdb, successfulTvtimeImdb);
+  const successfulDirect = new Map([...directTvmazeResults].flatMap(([id, show]) => show ? [[id, show] as const] : []));
+  const reconciled = reconcileShows(selected.imdbRows, tvTimeShows, successfulImdb, successfulTvdb, successfulTvtimeImdb, successfulDirect);
   const providers = new Map<number, ProviderShow>();
   for (const record of reconciled) {
     if (record.provider) providers.set(record.provider.id, record.provider);
@@ -235,7 +248,7 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
   }));
 
   onProgress?.({ stage: "reconcile", completed: 0, total: reconciled.length, message: "Reconciling source records and episode progress." });
-  const records: ImportShowRecord[] = reconciled.map((record, index) => {
+  let records: ImportShowRecord[] = reconciled.map((record, index) => {
     const episodes = record.provider ? episodesByShow.get(record.provider.id) ?? [] : [];
     const progress = record.tvtime && record.provider && episodesByShow.has(record.provider.id) && record.kind !== "conflict"
       ? mapTvTimeProgressDetailed(record.tvtime, episodes, { now, settings })
@@ -243,6 +256,18 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
     onProgress?.({ stage: "reconcile", completed: index + 1, total: reconciled.length, message: `Reconciled ${index + 1} of ${reconciled.length} records.` });
     return { ...record, episodes, ...(progress ? { progress } : {}) };
   });
+
+  if (provider.getAlternateEpisodeMappings) {
+    records = await Promise.all(records.map(async (record) => {
+      if (!record.provider || !record.tvtime || !record.progress?.unresolved.length) return record;
+      try {
+        const alternates = await provider.getAlternateEpisodeMappings!(record.provider.id);
+        if (alternates.length === 0) return record;
+        const remapped = mapTvTimeProgressDetailed(record.tvtime, record.episodes, { now, settings }, alternates);
+        return remapped.unresolved.length < record.progress.unresolved.length ? { ...record, progress: remapped } : record;
+      } catch { return record; }
+    }));
+  }
 
   const progressReports = records.flatMap((record) => record.progress ? [record.progress] : []);
   const report: ImportReport = {

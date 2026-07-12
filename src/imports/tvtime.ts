@@ -17,6 +17,7 @@ export interface TvTimeEpisode {
 }
 export interface TvTimeShow {
   uuid: string; tvdbShowId?: number; imdbId?: string; title: string; createdAt: string;
+  providerShowId?: number;
   status: "up_to_date" | "continuing" | "not_started_yet" | "stopped"; episodes: TvTimeEpisode[];
 }
 export interface TvTimeParseResult { shows: TvTimeShow[]; specials: number; specialFlagMismatches: number; ignoredEntries: string[] }

@@ -225,24 +225,14 @@ function DecisionsView({ analysis, tracker, decisions, setDecisions }: {
     const next = { ...decisions.progressChoices }; delete next[id]; setDecisions({ ...decisions, progressChoices: next });
   };
   return <>
-    {(analysis.report.unmatchedShows > 0 || analysis.report.unresolvedEpisodes > 0 || analysis.report.numberingConflicts.length > 0) && <section className="report"><h2>Unresolved records</h2>
-      <p>These named records remain excluded or partially mapped. Review them in the import report before continuing.</p>
-      <label className="decision-row review-confirm"><input type="checkbox" checked={decisions.unresolvedReviewed}
-        onChange={(event) => setDecisions({ ...decisions, unresolvedReviewed: event.target.checked })}/>
-        I reviewed the unmatched shows and unresolved episode mappings.</label>
+    {(analysis.report.unmatchedShows > 0 || analysis.report.unresolvedEpisodes > 0 || analysis.report.numberingConflicts.length > 0) && <section className="report attention-summary"><h2>{analysis.report.unmatchedShows + new Set(analysis.report.unresolvedEpisodeRecords.map((episode) => episode.show)).size} shows need attention</h2>
+      <p>Matched shows will still import. Unmatched shows are skipped, and any remaining unmapped TV Time episode states are listed in the report without blocking the import.</p>
     </section>}
     {conflicts.length > 0 && <section className="report"><h2>Exact ID conflicts</h2><p>Conflicting records cannot be merged silently. Explicitly exclude them from this commit.</p>
       {conflicts.map((record) => <label className="decision-row" key={record.id}><input type="checkbox" checked={decisions.excludedConflictRecordIds.includes(record.id)} onChange={(event) => setDecisions({ ...decisions,
         excludedConflictRecordIds: event.target.checked ? [...decisions.excludedConflictRecordIds, record.id] : decisions.excludedConflictRecordIds.filter((id) => id !== record.id) })}/>
         Exclude {record.imdb?.title ?? record.tvtime?.title ?? record.id}: {record.conflict?.reason}</label>)}</section>}
-    {tvTimeOnly.length > 0 && <section className="report"><h2>TV Time-only shows</h2>{analysis.fixtureSubsetMode
-      ? <p>Fixture subset mode will include these selected TV Time shows automatically and apply their mapped episode history.</p>
-      : <><p>Select the TV Time-only shows to add. They are excluded by default.</p>{tvTimeOnly.map((record) => <label className="decision-row" key={record.id}><input type="checkbox"
-        checked={decisions.includeTvTimeOnlyRecordIds.includes(record.id)} onChange={(event) => setDecisions({ ...decisions,
-          includeTvTimeOnlyRecordIds: event.target.checked ? [...decisions.includeTvTimeOnlyRecordIds, record.id] : decisions.includeTvTimeOnlyRecordIds.filter((id) => id !== record.id) })}/>
-        {record.tvtime?.title ?? record.provider?.name ?? record.id}</label>)}<label className="decision-row review-confirm"><input type="checkbox" checked={decisions.tvTimeOnlyReviewed}
-          onChange={(event) => setDecisions({ ...decisions, tvTimeOnlyReviewed: event.target.checked })}/>I reviewed the TV Time-only shows.</label></>}
-    </section>}
+    {tvTimeOnly.length > 0 && <section className="report auto-included"><h2>{tvTimeOnly.length} TV Time shows will be added automatically</h2><p>These shows have confident provider matches. Their mapped watched and unwatched history will be imported without additional choices.</p></section>}
     {finished.length > 0 && <section className="report"><h2>Finished IMDb-only shows</h2><fieldset><legend>What does this IMDb list contain?</legend>
       <label className="decision-row"><input type="radio" name="finished-mode" checked={decisions.finishedMode === "watched_everything"} onChange={() => setDecisions({ ...decisions, finishedMode: "watched_everything" })}/>I have watched everything in this list</label>
       <label className="decision-row"><input type="radio" name="finished-mode" checked={decisions.finishedMode === "mixture"} onChange={() => setDecisions({ ...decisions, finishedMode: "mixture" })}/>This list is a mixture</label>

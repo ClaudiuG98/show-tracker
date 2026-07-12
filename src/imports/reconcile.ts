@@ -1,5 +1,5 @@
 import { getEpisodeAvailability } from "../domain/availability";
-import type { ProviderEpisode, ProviderShow, Settings, WatchedEpisodeState } from "../domain/models";
+import type { ProviderAlternateEpisodeMapping, ProviderEpisode, ProviderShow, Settings, WatchedEpisodeState } from "../domain/models";
 import type { ImdbImportRow } from "./imdb";
 import type { TvTimeShow } from "./tvtime";
 
@@ -30,6 +30,7 @@ export function reconcileShows(
   imdbMatches: Map<string, ProviderShow>,
   tvdbMatches: Map<number, ProviderShow>,
   tvtimeImdbMatches: Map<string, ProviderShow> = imdbMatches,
+  directTvmazeMatches: Map<string, ProviderShow> = new Map(),
 ): ShowMatch[] {
   const records: ShowMatch[] = imdb.map((row) => {
     const provider = imdbMatches.get(row.imdbId);
@@ -41,15 +42,16 @@ export function reconcileShows(
   const byProviderId = new Map(records.flatMap((record) => record.provider ? [[record.provider.id, record] as const] : []));
 
   for (const show of tvtime) {
+    const directProvider = directTvmazeMatches.get(show.uuid);
     const tvdbProvider = show.tvdbShowId === undefined ? undefined : tvdbMatches.get(show.tvdbShowId);
     const imdbProvider = show.imdbId ? tvtimeImdbMatches.get(show.imdbId) : undefined;
-    const stableImdbId = show.imdbId ?? tvdbProvider?.externalIds.imdb ?? imdbProvider?.externalIds.imdb;
+    const stableImdbId = show.imdbId ?? directProvider?.externalIds.imdb ?? tvdbProvider?.externalIds.imdb ?? imdbProvider?.externalIds.imdb;
     const linked = (stableImdbId ? byImdbId.get(stableImdbId) : undefined)
       ?? (tvdbProvider ? byProviderId.get(tvdbProvider.id) : undefined)
       ?? (imdbProvider ? byProviderId.get(imdbProvider.id) : undefined);
 
     const exactProvidersDiffer = Boolean(tvdbProvider && imdbProvider && tvdbProvider.id !== imdbProvider.id);
-    const resolved = tvdbProvider ?? imdbProvider;
+    const resolved = directProvider ?? tvdbProvider ?? imdbProvider;
     const sourceProvidersDiffer = Boolean(linked?.provider && resolved && linked.provider.id !== resolved.id);
     if (exactProvidersDiffer || sourceProvidersDiffer || linked?.tvtime) {
       const conflict: ShowMatch = linked ?? { id: `tvtime:${show.uuid}`, kind: "conflict" };
@@ -124,12 +126,20 @@ export function mapTvTimeProgressDetailed(
   tvtime: TvTimeShow,
   providerEpisodes: ProviderEpisode[],
   clock?: ProgressMappingClock,
+  alternateMappings: ProviderAlternateEpisodeMapping[] = [],
 ): TvTimeProgressMapping {
   const regular = providerEpisodes.filter((episode) => episode.kind === "regular");
   const byTvdb = new Map(regular.flatMap((episode) => episode.tvdbEpisodeId === undefined
     ? []
     : [[episode.tvdbEpisodeId, episode] as const]));
   const byNumber = new Map(regular.map((episode) => [`${episode.season}:${episode.number}`, episode]));
+  const normalizeName = (value: string) => value.normalize("NFKD").toLocaleLowerCase("en-US").replace(/[^\p{L}\p{N}]+/gu, "").trim();
+  const alternateByName = new Map<string, ProviderAlternateEpisodeMapping[]>();
+  for (const mapping of alternateMappings) {
+    if (!mapping.name) continue;
+    const name = normalizeName(mapping.name); if (!name) continue;
+    alternateByName.set(name, [...(alternateByName.get(name) ?? []), mapping]);
+  }
   const states: ImportedEpisodeState[] = [];
   const unresolved: UnresolvedTvTimeEpisode[] = [];
   const numberingConflicts: EpisodeNumberingConflict[] = [];
@@ -145,7 +155,13 @@ export function mapTvTimeProgressDetailed(
     }
     const externalMatch = byTvdb.get(episode.tvdbEpisodeId);
     const provider = externalMatch ?? byNumber.get(`${episode.season}:${episode.number}`);
-    if (!provider) {
+    let providers = provider ? [provider] : [];
+    if (providers.length === 0) {
+      const candidates = alternateByName.get(normalizeName(episode.name)) ?? [];
+      const signatures = new Map(candidates.map((candidate) => [candidate.primaryEpisodeIds.slice().sort((a, b) => a - b).join(","), candidate]));
+      if (signatures.size === 1) providers = [...signatures.values()][0]!.primaryEpisodeIds.flatMap((id) => regular.find((candidate) => candidate.id === id) ?? []);
+    }
+    if (providers.length === 0) {
       unresolved.push({
         show: tvtime.title,
         tvdbEpisodeId: episode.tvdbEpisodeId,
@@ -156,33 +172,34 @@ export function mapTvTimeProgressDetailed(
       });
       continue;
     }
-    if (externalMatch && (provider.season !== episode.season || provider.number !== episode.number)) {
+    if ((externalMatch || !provider) && (providers[0]!.season !== episode.season || providers[0]!.number !== episode.number)) {
       numberingConflicts.push({
         show: tvtime.title,
         episode: episode.name,
         sourceNumber: `S${episode.season}E${episode.number}`,
-        providerNumber: `S${provider.season}E${provider.number}`,
+        providerNumber: `S${providers[0]!.season}E${providers[0]!.number}`,
       });
     }
-    states.push({
-      tvmazeEpisodeId: provider.id,
-      tvdbEpisodeId: episode.tvdbEpisodeId,
-      season: provider.season,
-      episode: provider.number,
-      watched: episode.watched,
-      ...(episode.watched && episode.watchedAt ? { watchedAt: episode.watchedAt } : {}),
-      source: "tvtime",
-      rewatchCount: episode.rewatchCount,
+    for (const target of providers) states.push({
+      tvmazeEpisodeId: target.id,
+      ...(providers.length === 1 ? { tvdbEpisodeId: episode.tvdbEpisodeId } : {}),
+      season: target.season, episode: target.number, watched: episode.watched,
+      ...(episode.watched && episode.watchedAt ? { watchedAt: episode.watchedAt } : {}), source: "tvtime", rewatchCount: episode.rewatchCount,
     });
     if (episode.watched) watchedMapped++;
     else {
       explicitUnwatchedMapped++;
-      if (clock && getEpisodeAvailability(provider, clock.now, clock.settings.timezone, clock.settings.dateOnlyReleaseHour) === "future") {
+      if (clock && providers.some((target) => getEpisodeAvailability(target, clock.now, clock.settings.timezone, clock.settings.dateOnlyReleaseHour) === "future")) {
         futureUnwatchedExcluded++;
       }
     }
   }
-  return { states, watchedMapped, explicitUnwatchedMapped, futureUnwatchedExcluded, specialsExcluded, unresolved, numberingConflicts };
+  const mergedStates = [...new Map(states.map((state) => [state.tvmazeEpisodeId, states.filter((candidate) => candidate.tvmazeEpisodeId === state.tvmazeEpisodeId)])).values()].map((group) => {
+    const first = group[0]!, watched = group.every((state) => state.watched), watchedAt = group.flatMap((state) => state.watchedAt ? [state.watchedAt] : []).sort().at(-1);
+    const { watchedAt: _watchedAt, ...base } = first;
+    return { ...base, watched, ...(watched && watchedAt ? { watchedAt } : {}), rewatchCount: Math.max(...group.map((state) => state.rewatchCount ?? 0)) };
+  });
+  return { states: mergedStates, watchedMapped, explicitUnwatchedMapped, futureUnwatchedExcluded, specialsExcluded, unresolved, numberingConflicts };
 }
 
 /** Backwards-compatible convenience wrapper for callers that need localized states. */

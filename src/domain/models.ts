@@ -49,6 +49,18 @@ export interface ProviderShow {
     medium?: string;
     original?: string;
   };
+  premiered?: string;
+  ended?: string;
+  rating?: number;
+  genres?: string[];
+  runtimeMinutes?: number;
+  language?: string;
+  showType?: string;
+  networkName?: string;
+  webChannelName?: string;
+  /** True once the extended show-detail fields have been requested from TVMaze. */
+  detailsLoaded?: boolean;
+  metadataVersion?: number;
   providerUrl?: string;
   updatedAt: number;
 }
@@ -64,6 +76,20 @@ export interface ProviderEpisode {
   airdate?: string;
   airtime?: string;
   airstamp?: string;
+  runtimeMinutes?: number;
+  summary?: string;
+  rating?: number;
+  image?: {
+    medium?: string;
+    original?: string;
+  };
+}
+
+export interface ProviderAlternateEpisodeMapping {
+  season: number;
+  number: number;
+  name?: string;
+  primaryEpisodeIds: number[];
 }
 
 export interface ActionSnapshot {
@@ -96,6 +122,7 @@ export interface TelevisionProvider {
   lookupByTvdbId(id: number): Promise<ProviderShow | null>;
   getShow(id: number): Promise<ProviderShow | null>;
   getEpisodes(id: number): Promise<ProviderEpisode[]>;
+  getAlternateEpisodeMappings?(id: number): Promise<ProviderAlternateEpisodeMapping[]>;
   getChangedShows(since: "day" | "week" | "month" | "all"): Promise<Map<number, number>>;
 }
 

@@ -1,7 +1,7 @@
-import type { ProviderEpisode, ProviderShow, ProviderStatus, TelevisionProvider } from "../../domain/models";
+import type { ProviderAlternateEpisodeMapping, ProviderEpisode, ProviderShow, ProviderStatus, TelevisionProvider } from "../../domain/models";
 import { db, type CacheEntry } from "../../storage/database";
 import { tvMazeRequest, type TvMazeRequest } from "./client";
-import { tvMazeEpisodeSchema, tvMazeShowSchema } from "./schemas";
+import { tvMazeAlternateEpisodeSchema, tvMazeAlternateListSchema, tvMazeEpisodeSchema, tvMazeShowSchema } from "./schemas";
 
 export const TVMAZE_CACHE_TTL = {
   exactLookupMs: 7 * 24 * 60 * 60 * 1_000,
@@ -51,6 +51,13 @@ function approvedImageUrl(value: string | null | undefined) {
   catch { return undefined; }
 }
 
+function plainText(value: string | null | undefined) {
+  if (!value) return undefined;
+  const text = value.replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/\s+/g, " ").trim();
+  return text || undefined;
+}
+
 function normalizeShow(raw: unknown): ProviderShow {
   const show = tvMazeShowSchema.parse(raw);
   const medium = approvedImageUrl(show.image?.medium), original = approvedImageUrl(show.image?.original);
@@ -67,6 +74,15 @@ function normalizeShow(raw: unknown): ProviderShow {
         ...(original ? { original } : {}),
       },
     } : {}),
+    ...(show.premiered ? { premiered: show.premiered } : {}),
+    ...(show.ended ? { ended: show.ended } : {}),
+    ...(show.rating?.average != null ? { rating: show.rating.average } : {}),
+    ...(show.genres?.length ? { genres: show.genres } : {}),
+    ...(show.averageRuntime != null || show.runtime != null ? { runtimeMinutes: show.averageRuntime ?? show.runtime! } : {}),
+    ...(show.language ? { language: show.language } : {}),
+    ...(show.type ? { showType: show.type } : {}),
+    ...(show.network?.name ? { networkName: show.network.name } : {}),
+    ...(show.webChannel?.name ? { webChannelName: show.webChannel.name } : {}), detailsLoaded: true, metadataVersion: 2,
     ...(show.url ? { providerUrl: show.url } : {}), updatedAt: show.updated,
   };
 }
@@ -76,13 +92,18 @@ function normalizeEpisodes(raw: unknown, showId: number): ProviderEpisode[] {
     throw new TvMazeProviderError("TVMaze returned invalid episode metadata.", "episode_metadata");
   }
   try {
-    return raw.map((item) => tvMazeEpisodeSchema.parse(item)).filter((item) => item.number !== null).map((episode) => ({
+    return raw.map((item) => tvMazeEpisodeSchema.parse(item)).filter((item) => item.number !== null).map((episode) => {
+      const medium = approvedImageUrl(episode.image?.medium), original = approvedImageUrl(episode.image?.original), summary = plainText(episode.summary);
+      return {
       id: episode.id, showId, season: episode.season, number: episode.number!,
       ...(episode.name ? { name: episode.name } : {}),
       kind: episode.season === 0 || episode.type === "special" || episode.type?.endsWith("_special") ? "special" : "regular",
       ...(episode.airdate ? { airdate: episode.airdate } : {}), ...(episode.airtime ? { airtime: episode.airtime } : {}),
       ...(episode.airstamp ? { airstamp: episode.airstamp } : {}),
-    }));
+      ...(episode.runtime != null ? { runtimeMinutes: episode.runtime } : {}), ...(summary ? { summary } : {}),
+      ...(episode.rating?.average != null ? { rating: episode.rating.average } : {}),
+      ...(medium || original ? { image: { ...(medium ? { medium } : {}), ...(original ? { original } : {}) } } : {}),
+    }; });
   } catch (cause) {
     if (cause instanceof TvMazeProviderError) throw cause;
     throw new TvMazeProviderError("TVMaze returned invalid episode metadata.", "episode_metadata", cause);
@@ -92,6 +113,7 @@ function normalizeEpisodes(raw: unknown, showId: number): ProviderEpisode[] {
 const imdbCacheKey = (id: string) => `tvmaze:v1:lookup:imdb:${id}`;
 const tvdbCacheKey = (id: number) => `tvmaze:v1:lookup:tvdb:${id}`;
 const episodesCacheKey = (showId: number) => `tvmaze:v1:episodes:${showId}`;
+const alternateEpisodesCacheKey = (showId: number) => `tvmaze:v1:alternate-episodes:${showId}`;
 
 export class TvMazeProvider implements TelevisionProvider {
   private readonly request: TvMazeRequest;
@@ -184,6 +206,33 @@ export class TvMazeProvider implements TelevisionProvider {
     const episodes = normalizeEpisodes(raw, showId);
     await this.writeCache(key, raw, TVMAZE_CACHE_TTL.episodesMs);
     return episodes;
+  }
+
+  async getAlternateEpisodeMappings(showId: number): Promise<ProviderAlternateEpisodeMapping[]> {
+    const key = alternateEpisodesCacheKey(showId);
+    const normalize = (value: unknown): ProviderAlternateEpisodeMapping[] => {
+      if (!Array.isArray(value)) throw new Error("Invalid alternate episode metadata");
+      return value.map((item) => {
+        const record = item as ProviderAlternateEpisodeMapping;
+        if (!Number.isInteger(record.season) || !Number.isInteger(record.number) || !Array.isArray(record.primaryEpisodeIds)) throw new Error("Invalid alternate episode mapping");
+        return record;
+      });
+    };
+    const cached = await this.readCache(key, normalize); if (cached) return cached;
+    const rawLists = await this.request(`/shows/${showId}/alternatelists`);
+    if (!Array.isArray(rawLists) || rawLists.length === 0) { await this.writeCache(key, [], TVMAZE_CACHE_TTL.episodesMs); return []; }
+    const lists = rawLists.map((item) => tvMazeAlternateListSchema.parse(item));
+    const mappings = (await Promise.all(lists.map(async (list) => {
+      const raw = await this.request(`/alternatelists/${list.id}/alternateepisodes?embed=episodes`);
+      if (!Array.isArray(raw)) return [];
+      return raw.map((item): ProviderAlternateEpisodeMapping | undefined => {
+        const episode = tvMazeAlternateEpisodeSchema.parse(item), primaryEpisodeIds = [...new Set(episode._embedded?.episodes.map((candidate) => candidate.id) ?? [])];
+        if (primaryEpisodeIds.length === 0) return undefined;
+        return { season: episode.season, number: episode.number, ...(episode.name ? { name: episode.name } : {}), primaryEpisodeIds };
+      }).filter((item): item is ProviderAlternateEpisodeMapping => Boolean(item));
+    }))).flat();
+    await this.writeCache(key, mappings, TVMAZE_CACHE_TTL.episodesMs);
+    return mappings;
   }
 
   async getChangedShows(since: "day" | "week" | "month" | "all") {
