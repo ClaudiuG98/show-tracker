@@ -1,0 +1,50 @@
+{
+  "name": "imdb-shows-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt -b chrome",
+    "dev:fixture": "wxt -b chrome -m fixture",
+    "build:fixture": "wxt build -b chrome -m fixture",
+    "dev:edge": "wxt -b edge",
+    "build": "wxt build -b chrome",
+    "build:edge": "wxt build -b edge",
+    "zip": "wxt zip -b chrome",
+    "prepare": "wxt prepare",
+    "typecheck": "wxt prepare && tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.83.0",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "dexie": "^4.0.11",
+    "fflate": "^0.8.2",
+    "papaparse": "^5.5.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-router-dom": "^7.7.1",
+    "zod": "^4.0.14",
+    "zustand": "^5.0.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.1",
+    "@testing-library/jest-dom": "^6.6.4",
+    "@testing-library/react": "^16.3.0",
+    "@types/chrome": "^0.0.328",
+    "@types/papaparse": "^5.3.16",
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "fake-indexeddb": "^6.0.1",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+    ,"wxt": "^0.20.27"
+  }
+}

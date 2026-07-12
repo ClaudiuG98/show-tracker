@@ -1,0 +1,996 @@
+I want you to create a detailed implementation plan for a Chrome/Edge browser extension that acts as a local TV episode tracker integrated with IMDb.
+
+IMPORTANT: Do not implement the extension yet. First inspect the repository and the supplied sample files, then produce a detailed technical plan for my approval.
+
+Working description
+===================
+
+The extension should let users import their IMDb TV-show list and optionally their TV Time export, track watched episodes locally, see the next episode they need to watch for each show, and see future episodes in an Upcoming tab.
+
+This is not a TV Time clone. It should only reproduce the useful episode-tracking workflow.
+
+There should be:
+
+- No community features
+- No comments or reactions
+- No user accounts
+- No cloud backend
+- No central application database
+- No social features
+- No movie tracking in the MVP
+- No requirement to log in through the extension
+
+All user information should remain in the browser.
+
+Reference files
+===============
+
+Inspect these files if present:
+
+- fixtures/imports/imdb-list.csv
+- fixtures/imports/tvtime-export.zip
+- docs/reference-ui/tvtime-watch-list-1.jpeg
+- docs/reference-ui/tvtime-watch-list-2.jpeg
+
+If the paths differ, locate equivalent files in the repository.
+
+The IMDb and TV Time files are real exports and should be treated as fixtures for designing and testing the importers. Do not hardcode the application around only these exact files. Determine their actual schemas and design importers that tolerate reasonable format variations.
+
+The screenshots demonstrate the desired behavior:
+
+- One next episode per show in the Watch List
+- A checkmark to mark that episode watched
+- The card advances to the next available episode
+- Upcoming episodes are separated from aired episodes
+- Users can open a show to see seasons and episodes
+- The new interface does not have to copy TV Time visually
+
+Technology and architecture
+===========================
+
+Plan a Manifest V3 extension written in TypeScript.
+
+Recommend and justify an appropriate UI/build stack. Prefer a maintainable but lightweight architecture. Consider React with Vite, WXT, or a similarly appropriate setup, but do not introduce unnecessary complexity.
+
+The initial browser targets are:
+
+- Google Chrome
+- Microsoft Edge
+
+Structure the code so Firefox support could be considered later, but do not let Firefox compatibility delay the MVP.
+
+Use a provider abstraction for television metadata so TVMaze can initially be used without permanently coupling every part of the application to it.
+
+For example, the plan should define an interface conceptually similar to:
+
+interface TelevisionProvider {
+  lookupByImdbId(imdbId: string): Promise<ProviderShow | null>;
+  lookupByTvdbId(tvdbId: number): Promise<ProviderShow | null>;
+  getEpisodes(showId: number): Promise<ProviderEpisode[]>;
+  getChangedShows(since: SyncWindow): Promise<Map<number, number>>;
+}
+
+TVMaze should be the first provider.
+
+Use the following TVMaze functionality:
+
+- Exact show lookup using an IMDb ID
+- Exact show lookup using a TVDB ID
+- Complete regular episode list for a show
+- Show status, such as Running or Ended
+- Episode airdate
+- Episode airtime
+- Episode airstamp when available
+- Show update timestamps
+- Show images when available
+
+Relevant endpoint patterns include:
+
+- /lookup/shows?imdb=:imdbId
+- /lookup/shows?thetvdb=:tvdbId
+- /shows/:id
+- /shows/:id/episodes
+- /updates/shows?since=day
+- /updates/shows?since=week
+- /updates/shows?since=month
+
+Do not fetch TVMaze's complete future schedule for routine operation if the locally tracked episode lists are sufficient.
+
+Respect TVMaze attribution, licensing, caching and rate limits. Include graceful HTTP 404 and HTTP 429 handling, bounded retries, exponential or appropriate backoff, and request concurrency limits.
+
+Local storage
+=============
+
+There should be no server database.
+
+Plan to use:
+
+1. chrome.storage.local for important user-owned state:
+   - Tracked-show records
+   - Provider ID mappings
+   - Watched episode state
+   - Paused/not-started state
+   - Import decisions
+   - Settings
+   - Watched-action history
+   - Last synchronization information
+
+2. IndexedDB for replaceable or larger cached data:
+   - Complete TVMaze episode lists
+   - Show and season metadata
+   - API response cache
+   - Optional image cache
+
+Keep user progress separate from API metadata so cached metadata can be discarded and rebuilt without losing progress.
+
+Include:
+
+- Export local tracker backup to JSON
+- Restore local tracker backup from JSON
+- Schema versioning
+- Storage migrations
+- Safe recovery from partial or interrupted imports
+- An option to reset cached metadata without resetting watch progress
+
+Do not rely on chrome.storage.sync for the complete tracker.
+
+Canonical identifiers and matching
+==================================
+
+Use TVMaze show ID as the canonical provider ID after successful mapping.
+
+Preserve all available external IDs:
+
+- IMDb title ID
+- TVDB show ID
+- TVMaze show ID
+- TVDB episode ID when available
+- TVMaze episode ID
+
+Matching priority:
+
+1. IMDb ID from the IMDb CSV -> exact TVMaze IMDb lookup
+2. TVDB show ID from TV Time -> exact TVMaze TVDB lookup
+3. If both resolve to the same TVMaze ID, merge automatically
+4. If they resolve differently, flag a conflict
+5. Only use title/year matching as a controlled fallback
+6. Never silently accept an ambiguous title match
+7. Present uncertain matches for user confirmation
+
+Account for:
+
+- Alternate show names
+- Country-specific titles
+- Remakes with the same name
+- Anthology shows
+- TV Time grouping that may differ from TVMaze
+- Season numbering differences
+- Renamed shows
+- Missing IDs
+- Deleted or merged provider records
+
+IMDb CSV importer
+=================
+
+Inspect the actual supplied CSV.
+
+The importer should generally use fields such as:
+
+- Const / IMDb title ID
+- Title
+- Title type
+- Year
+- Created / date added
+- Position when useful
+- User rating when present
+
+Only import television series and television miniseries in the MVP.
+
+The importer must:
+
+- Validate the file before changing permanent state
+- Show an import preview
+- Deduplicate IMDb IDs
+- Report unsupported rows
+- Report malformed rows
+- Preserve the IMDb list addition date
+- Sort manual onboarding screens by IMDb Created date descending, newest first
+- Use Position only as a fallback when Created is unavailable
+- Allow reimporting a newer CSV without deleting watch progress
+- Show added, unchanged, missing and removed titles during reimport
+- Not remove locally tracked shows automatically without explicit confirmation
+
+Do not scrape the user's private IMDb list from IMDb.
+
+TV Time ZIP importer
+====================
+
+Inspect the real ZIP and determine its internal file structure and JSON schema.
+
+Extract, where available:
+
+- TVDB show IDs
+- TVDB episode IDs
+- Show names
+- Season numbers
+- Episode numbers
+- Episode names
+- Watched flags
+- Watched timestamps
+- Rewatch counts
+- TV Time show status
+- Date added
+- Stopped or paused state
+- Any useful metadata for matching
+
+TV Time watched history has priority over assumptions made from the IMDb list.
+
+The importer must not assume that every episode marked unwatched in the TV Time export is already available. Future episodes may exist in exports.
+
+An episode should enter the current backlog only when:
+
+- It is not marked watched
+- It is a regular episode
+- Its release date/time indicates that it has aired or become available
+
+Map TV Time progress to TVMaze using this priority:
+
+1. Exact TVDB episode ID when TVMaze exposes a compatible external mapping
+2. TVMaze show ID plus season and episode number
+3. Controlled title/date fallback only when necessary
+4. Manual review for unresolved mappings
+
+Treat stopped shows as Paused by default.
+
+Do not let specials create thousands of false backlog entries.
+
+For the MVP:
+
+- Use regular episodes for primary progress
+- Ignore insignificant specials in Watch List calculations
+- Preserve mapped watched specials if practical
+- Put unresolved significant specials into an optional review report
+- Explain in the plan how significant specials could be supported later
+
+Combined-import behavior
+========================
+
+When both files are supplied:
+
+- IMDb determines membership in the imported IMDb collection and supplies IMDb addition dates
+- TV Time supplies watched progress where available
+- TVMaze supplies current show status, episode metadata and release scheduling
+- TV Time-only shows should be shown in the import report
+- Let the user decide whether TV Time-only shows should also be added to the tracker
+- IMDb-only shows must go through the appropriate assumption/review flow
+
+Do not ask the user to review shows whose progress was confidently established through TV Time unless there is a conflict.
+
+IMDb-only onboarding
+====================
+
+Do not include a "Plan to watch" bulk-question option.
+
+For finished IMDb-only shows, ask:
+
+"What does this IMDb list contain?"
+
+Options:
+
+1. "I have watched everything in this list"
+2. "This list is a mixture"
+
+Finished means the TVMaze show is Ended and there are no relevant future regular episodes.
+
+If the user chooses "I have watched everything in this list":
+
+- Mark all regular episodes that were available before the import moment as watched
+- Do not mark future episodes watched
+- Be careful with episodes released on the current date when no exact time exists
+
+If the user chooses "This list is a mixture":
+
+- Display the relevant shows sorted by IMDb Created date descending
+- Assume each show is watched/caught up unless the user selects it as not watched
+- Use copy such as: "Select the shows you have not watched yet"
+- Selected shows become Not started
+- Unselected shows have all currently available regular episodes marked watched
+- Allow individual progress adjustment before completing the import
+
+Active or incomplete IMDb-only shows
+====================================
+
+Shows that are not fully finished must always be presented for progress review.
+
+This includes shows where:
+
+- TVMaze status is not Ended, or
+- Future regular episodes are known, or
+- The data is insufficient to confidently classify the show as completely finished
+
+For these shows:
+
+- Default conservatively to current aired episodes being unwatched
+- Let the user select the episodes already watched
+- Provide fast actions so onboarding is not tedious:
+  - Caught up
+  - Not started
+  - Choose last watched episode
+  - Select episodes manually
+
+"Choose last watched episode" should mark all previous regular episodes through that episode as watched.
+
+The episode-level interface must still permit gaps, because some users may skip episodes.
+
+When TV Time already provides progress for an active show, prefill it and do not reset it to unwatched.
+
+Import report
+=============
+
+After analysis but before committing the import, show:
+
+- Automatically matched shows
+- IMDb-only shows
+- TV Time-only shows
+- Conflicting ID matches
+- Ambiguous title matches
+- Unmatched shows
+- Episodes mapped successfully
+- Episodes that could not be mapped
+- Specials ignored or requiring review
+- The number of titles that need manual progress setup
+
+The import operation should be transactional when practical. A failed import should not leave half-written progress.
+
+User show states
+================
+
+Keep provider status separate from user progress.
+
+Provider status might include:
+
+- Running
+- Ended
+- In development
+- To be determined
+- Unknown
+
+User state should support at least:
+
+- watching
+- caught_up
+- not_started
+- paused
+- completed
+- progress_unknown
+
+Define clear state-transition rules.
+
+Examples:
+
+- Running + caught_up:
+  Hidden from Watch List until another episode becomes available
+
+- Running + watching:
+  Displayed when aired unwatched episodes exist
+
+- Ended + completed:
+  Hidden from the normal Watch List
+
+- Ended + watching:
+  Displayed until the remaining aired episodes are watched
+
+- Not started:
+  Visible in Library but hidden from the main Watch List by default
+
+- Paused:
+  Hidden from the main Watch List by default
+
+IMDb integration
+================
+
+Inject two types of controls into IMDb.
+
+1. Global Tracker entry
+
+Place a persistent Tracker control in IMDb's top navigation near the existing Watchlist control when feasible.
+
+It should:
+
+- Be visible across IMDb desktop pages
+- Display a badge with the number of shows currently waiting in the Watch List
+- Open the full extension dashboard in a new tab
+- Have robust fallback placement if IMDb changes its header DOM
+- Fail gracefully rather than breaking IMDb
+- Avoid duplicate injection during SPA-style navigation
+
+2. Track-show control
+
+On IMDb television series and miniseries pages, place a control near IMDb's existing Watchlist action when feasible.
+
+States:
+
+- Track show
+- Tracked
+
+When clicked:
+
+- Extract the IMDb ID from the URL
+- Resolve it through TVMaze
+- Add it locally
+- Open a compact progress menu or the corresponding show page
+
+The Tracked menu should support:
+
+- Open in tracker
+- Set progress
+- Mark caught up
+- Set as not started
+- Pause
+- Remove from tracker
+
+Do not scrape IMDb show metadata as the data source.
+
+Only use the IMDb ID contained in the URL and user-initiated IMDb CSV imports. DOM inspection may be used only to place extension UI reliably.
+
+The extension must not attempt to create a real route such as:
+
+imdb.com/tracker
+
+Instead, use an extension-owned page such as:
+
+dashboard.html#/watch-list
+
+The injected Tracker button and browser toolbar icon should open this extension page.
+
+IMDb-compatible visual design
+=============================
+
+The extension must visually fit IMDb's design language.
+
+For controls injected into IMDb:
+
+- Match IMDb's dark visual style
+- Match the surrounding typography hierarchy
+- Match spacing, border radii, control height and interaction behavior
+- Use IMDb-like dark surfaces and yellow accent treatment
+- Support hover, focus, active and disabled states
+- Use computed host styles or carefully scoped fallback variables where appropriate
+- Use Shadow DOM or another safe isolation strategy where useful
+- Ensure the injected UI does not damage IMDb layouts
+
+For the extension dashboard:
+
+- Use a dark theme consistent with IMDb
+- Use restrained yellow accents
+- Use high-contrast cards
+- Use strong title typography
+- Use clear episode numbering
+- Use IMDb-consistent spacing and rounded controls
+- Make it feel like a natural companion to IMDb
+
+Do not:
+
+- Copy IMDb's logo
+- Copy proprietary IMDb icons or artwork
+- Claim to be an official IMDb feature
+- Make the UI deceptively indistinguishable from an official IMDb product
+
+Use a subtle extension identity and include an "Unofficial extension" notice in the About or Settings area.
+
+Maintain accessibility:
+
+- Keyboard navigation
+- Visible focus indicators
+- Correct semantic controls
+- Sufficient contrast
+- ARIA labels for icon-only buttons
+- Reduced-motion support
+- Responsive layout
+- Usable zoom behavior
+
+Full dashboard
+==============
+
+The primary dashboard should be a full extension page opened in a browser tab, not a small popup.
+
+Primary navigation:
+
+- WATCH LIST
+- UPCOMING
+- LIBRARY
+
+Also include access to:
+
+- Import
+- Backup and restore
+- Settings
+- About / attribution
+
+WATCH LIST behavior
+===================
+
+The Watch List should display only one card per show.
+
+For each eligible show:
+
+1. Find all regular episodes that are already available
+2. Exclude watched episodes
+3. Sort them in normal airing order
+4. Display only the earliest aired unwatched episode
+5. Show the number of additional aired unwatched episodes
+
+Example:
+
+SILO
+S03 | E03  +4
+Episode title
+[watched checkmark]
+
+The "+4" count means four additional aired and unwatched episodes. It must not include future episodes.
+
+When the user presses the watched checkmark:
+
+1. Mark the displayed episode watched locally
+2. Record a watched-history action
+3. Immediately advance the card to the next aired unwatched episode
+4. If no aired unwatched episode remains, remove the show from Watch List
+5. If the show has a future scheduled episode, it remains in Upcoming
+6. Do not require an API request for this local transition
+
+The default show-card ordering should prioritize recent activity. Propose and document a precise sorting rule.
+
+A reasonable default is:
+
+- Sort shows by their most recently released currently-unwatched episode, newest first
+- Within a show, always display the earliest unwatched aired episode
+
+Consider optional alternative sorting later:
+
+- Oldest backlog first
+- Alphabetical
+- Manually pinned
+
+A show with state Not started or Paused should not flood Watch List by default.
+
+Show detail page
+================
+
+Clicking the poster, show name or episode details should open the show detail view.
+
+Display:
+
+- Poster
+- Show name
+- Provider status
+- User progress status
+- Seasons
+- Regular episodes
+- Watched state
+- Future/unaired state
+- Release date and localized release time
+- Episode title when available
+
+Actions:
+
+- Mark one episode watched
+- Mark one episode unwatched
+- Mark all aired episodes through this episode watched
+- Mark all aired episodes in a season watched
+- Mark the whole currently aired show caught up
+- Set as not started
+- Pause
+- Remove from tracker
+
+"Mark season watched" must only mark episodes that have already become available. It must not pre-mark future episodes in that season.
+
+UPCOMING behavior
+=================
+
+Upcoming should display the nearest future regular episode for each show.
+
+Prefer one card per show.
+
+Each card can include:
+
+- Show
+- Season and episode
+- Episode title
+- Release date
+- Localized release time when known
+- Number of later announced future episodes
+
+Sort chronologically, soonest first.
+
+For shows where an entire streaming season releases at once:
+
+- Group the release as one show card
+- When it becomes available, create one Watch List card starting with the first unwatched episode
+- Show the additional released episode count
+
+Moving from Upcoming to Watch List
+==================================
+
+When TVMaze provides an exact airstamp:
+
+- Store it
+- Display it in the user's timezone
+- Schedule a browser alarm where appropriate
+- When the timestamp passes, recompute availability locally
+- Move the episode from Upcoming to Watch List without waiting for another TVMaze request
+
+Browser alarms are not guaranteed to run while a browser is completely closed, so also recompute all availability:
+
+- At extension startup
+- When the dashboard opens
+- When the browser resumes
+- After metadata synchronization
+
+When only an airdate is known:
+
+- Treat it as a date-only release
+- Provide a configurable local release hour
+- Propose a sensible default, such as 09:00 local time
+- Clearly represent this as an extension preference, not a guaranteed service release time
+- Optionally show "Releases today" before the configured hour
+
+Do not repeatedly poll TVMaze around the release time.
+
+The local stored release time should determine the Watch List transition.
+
+A later refresh can discover:
+
+- Schedule corrections
+- Episode title changes
+- Newly announced following episodes
+
+Watched history
+===============
+
+Include a collapsible Watched History section.
+
+It should show recent local progress actions, newest first:
+
+- Show
+- Episode
+- Action
+- Timestamp
+- Undo
+
+Undo must restore the previous Watch List state immediately.
+
+Decide whether history should retain a fixed number of entries or a time window and explain the choice.
+
+LIBRARY behavior
+================
+
+Library contains all tracked shows.
+
+Support search and filters:
+
+- All
+- Watching
+- Caught up
+- Not started
+- Paused
+- Completed
+- Ended
+- Needs setup
+
+Display useful summary information without showing every episode by default.
+
+Possible fields:
+
+- Poster
+- Show title
+- User state
+- Provider status
+- Watched/available episode count
+- Next unwatched aired episode
+- Next scheduled episode
+- Last progress activity
+
+Refresh and synchronization
+===========================
+
+Do not refetch every tracked show on every extension opening.
+
+Use TVMaze show updates:
+
+1. Store the last known update timestamp for every tracked TVMaze show
+2. Periodically request changed-show timestamps
+3. Intersect the response with locally tracked TVMaze IDs
+4. Fetch show/episode data only for locally tracked shows whose update timestamp changed
+5. Update the local metadata cache
+6. Recalculate Watch List and Upcoming
+
+Propose a synchronization schedule that balances freshness and API use.
+
+Possible behavior:
+
+- Once daily as the reliable baseline
+- Optionally every few hours while the browser is active
+- On manual refresh
+- On initial import
+
+For long gaps:
+
+- since=day for short gaps
+- since=week for longer gaps
+- since=month when appropriate
+- full update timestamp list only when necessary
+
+Ended shows:
+
+- Do not poll every ended show individually
+- Refresh ended shows when TVMaze reports their update timestamp changed
+- This should catch revivals, specials, corrections or newly added episodes
+- Consider an infrequent integrity refresh only as a defensive fallback, and justify it
+
+API availability and episode calculations
+=========================================
+
+Define a single tested function that determines whether an episode is available.
+
+It must consider:
+
+- Exact airstamp
+- Date-only airdate
+- Configured date-only release hour
+- User timezone
+- Missing dates
+- Schedule changes
+- Episodes released simultaneously
+- Daylight-saving transitions
+
+Do not compare dates using fragile string logic.
+
+Define separate selectors for:
+
+- All aired unwatched episodes
+- Next aired unwatched episode
+- Additional aired unwatched count
+- Next future episode
+- Shows waiting in Watch List
+- Upcoming shows
+- Completed shows
+- Shows needing progress setup
+
+Security and permissions
+========================
+
+Use the minimum Manifest V3 permissions possible.
+
+Evaluate and justify permissions such as:
+
+- storage
+- alarms
+- notifications, only if notifications are part of the chosen MVP
+- host access for IMDb pages
+- host access for the TVMaze API
+
+Avoid broad permissions such as access to all websites.
+
+Requirements:
+
+- No remotely hosted executable code
+- Manifest V3-compatible Content Security Policy
+- Sanitize or safely render all provider-supplied HTML/text
+- Do not inject API HTML directly using unsafe innerHTML
+- Validate imported CSV, ZIP and JSON files
+- Put limits on ZIP size and decompression
+- Protect against ZIP bombs and malformed archives
+- Do not expose browser storage directly to IMDb page scripts
+- Use message passing between the isolated content script and extension contexts
+- Validate all extension messages
+- Avoid leaking watch history
+- No telemetry in the MVP unless separately approved
+
+Images and attribution
+======================
+
+Use TVMaze images where available.
+
+Plan graceful fallbacks for missing posters.
+
+Include visible TVMaze attribution where provider data or images are shown.
+
+Do not use or redistribute IMDb artwork scraped from IMDb pages.
+
+Testing
+=======
+
+Create a comprehensive testing plan.
+
+Unit tests should cover:
+
+- IMDb CSV parsing
+- TV Time ZIP parsing
+- Format variations
+- ID normalization
+- Exact matching
+- Ambiguous matching
+- Conflict detection
+- Merging IMDb and TV Time records
+- TV Time watched-progress import
+- Future episodes incorrectly marked unwatched
+- Regular episodes versus specials
+- Active-show onboarding
+- Finished-show bulk assumptions
+- Mixture selection
+- Choosing last watched episode
+- Aired/unaired calculations
+- Date-only releases
+- Exact airstamps
+- Timezone conversion
+- Daylight-saving changes
+- Simultaneous season releases
+- Next-episode selection
+- Additional-unwatched count
+- Marking an episode watched
+- Advancing the Watch List card
+- Removing a caught-up show from Watch List
+- Undo
+- Marking a season watched
+- Storage migrations
+- Backup and restore
+
+Integration tests should mock TVMaze and cover:
+
+- Successful IMDb lookup
+- Successful TVDB lookup
+- 404
+- 429 with retry
+- Network failure
+- Partial imports
+- Changed-show synchronization
+- Ended-show revival
+- Episode renumbering
+- Provider data corrections
+
+End-to-end tests should cover:
+
+- Loading the extension
+- IMDb header Tracker injection
+- IMDb title-page Track button
+- No duplicate buttons during IMDb navigation
+- Opening the dashboard
+- Importing both fixture files
+- Completing onboarding
+- Watch List checkmark flow
+- Upcoming-to-Watch-List transition
+- Opening show details
+- Marking a season watched
+- Backup and restore
+
+Use stable local HTML fixtures for IMDb DOM tests instead of relying exclusively on the live website.
+
+Planning output required
+========================
+
+Before writing any production code, return a plan containing:
+
+1. Repository assessment
+   - Existing files
+   - Existing stack
+   - Missing prerequisites
+   - Whether the supplied fixtures were accessible
+
+2. Parsed-fixture findings
+   - IMDb CSV schema
+   - TV Time ZIP contents and schema
+   - Useful identifiers
+   - Progress information
+   - Format inconsistencies
+   - Any risks found in the samples
+
+3. Product scope
+   - MVP features
+   - Explicit non-goals
+   - Features postponed until later
+
+4. Recommended technical architecture
+   - Extension contexts
+   - Dashboard
+   - Service worker
+   - Content scripts
+   - Storage layers
+   - Provider layer
+   - Import pipeline
+   - State-management approach
+
+5. Architecture diagram
+
+6. Proposed repository/file structure
+
+7. Core TypeScript data models
+
+8. Import state machine
+   - File selection
+   - Validation
+   - Parsing
+   - Matching
+   - Conflict review
+   - Progress review
+   - Preview
+   - Commit
+   - Recovery
+
+9. User-state transition diagram
+
+10. API request matrix
+    - Endpoint
+    - Trigger
+    - Cache behavior
+    - Failure behavior
+    - Retry behavior
+
+11. Page-by-page UI specification
+    - IMDb header control
+    - IMDb show control
+    - Watch List
+    - Upcoming
+    - Library
+    - Show details
+    - Import flow
+    - Settings
+    - Backup/restore
+
+12. IMDb-style design system
+    - Color tokens
+    - Typography
+    - Spacing
+    - Card style
+    - Buttons
+    - Badges
+    - Focus states
+    - Responsive breakpoints
+    - How injected controls inherit or emulate IMDb styling safely
+
+13. Refresh and scheduling algorithm
+
+14. Detailed milestone plan
+
+Suggested milestones:
+
+- Milestone 0: repository setup and fixture analysis
+- Milestone 1: data models and local persistence
+- Milestone 2: TVMaze provider and cache
+- Milestone 3: IMDb CSV importer
+- Milestone 4: TV Time importer and reconciliation
+- Milestone 5: onboarding and progress assumptions
+- Milestone 6: Watch List and show details
+- Milestone 7: Upcoming and scheduling
+- Milestone 8: IMDb page integration
+- Milestone 9: backup, restore and migrations
+- Milestone 10: testing, accessibility and packaging
+
+For every milestone include:
+
+- Purpose
+- Files/modules affected
+- Implementation tasks
+- Tests
+- Acceptance criteria
+- Dependencies
+- Risks
+
+15. Security and privacy review
+
+16. API/licensing/attribution checklist
+
+17. Chrome Web Store readiness checklist
+
+18. Known risks and mitigations
+
+19. Questions that genuinely block implementation
+
+20. A recommended first implementation task after the plan is approved
+
+Do not begin coding until I approve the plan.
+
+Do not invent findings from files you cannot access. Clearly state when something could not be inspected.
+
+Where there are reasonable alternatives, recommend one and explain the tradeoff rather than presenting every option without a conclusion.
+
+Keep the MVP focused. Do not add accounts, a backend, community functionality, recommendations, ratings, movies, social sharing or unrelated discovery features.
