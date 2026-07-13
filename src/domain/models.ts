@@ -15,6 +15,7 @@ export interface TrackedShow {
   externalIds: ExternalIds;
   titleSnapshot: string;
   imdbAddedAt?: string;
+  tvTimeAddedAt?: string;
   userState: UserShowState;
   userStateSource?: "import" | "user";
   userStateUpdatedAt?: string;

@@ -44,6 +44,7 @@ export interface ImportShowPlan {
   title: string;
   imdbId?: string;
   imdbAddedAt?: string;
+  tvTimeAddedAt?: string;
   tvtimeShowId?: string;
   desiredState: UserShowState;
   progress: ImportedEpisodeState[];
@@ -134,6 +135,7 @@ function createPlan(
     title: record.provider?.name ?? record.imdb?.title ?? record.tvtime?.title ?? record.id,
     ...(record.imdb?.imdbId ? { imdbId: record.imdb.imdbId } : {}),
     ...(record.imdb?.created ? { imdbAddedAt: record.imdb.created } : {}),
+    ...(record.tvtime?.createdAt ? { tvTimeAddedAt: record.tvtime.createdAt } : {}),
     ...(record.tvtime?.uuid ? { tvtimeShowId: record.tvtime.uuid } : {}),
     desiredState,
     progress,

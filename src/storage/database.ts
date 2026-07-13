@@ -23,7 +23,17 @@ class TrackerDatabase extends Dexie {
 
 export const db = new TrackerDatabase();
 export async function resetMetadataCache() {
-  await db.transaction("rw", db.providerShows, db.episodes, db.cache, async () => {
-    await Promise.all([db.providerShows.clear(), db.episodes.clear(), db.cache.clear()]);
+  await db.transaction("rw", db.providerShows, db.cache, async () => {
+    await db.cache.clear();
+    await db.providerShows.toCollection().modify((show) => { show.metadataVersion = 0; });
+  });
+}
+
+export async function clearTrackerDatabase() {
+  await db.transaction("rw", db.providerShows, db.episodes, db.cache, db.stagedImports, async () => {
+    await db.stagedImports.clear();
+    await db.episodes.clear();
+    await db.providerShows.clear();
+    await db.cache.clear();
   });
 }

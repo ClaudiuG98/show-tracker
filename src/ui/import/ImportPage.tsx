@@ -202,28 +202,75 @@ function episodeLabel(episode: ProviderEpisode) {
   return `S${episode.season}E${episode.number}${episode.name ? ` — ${episode.name}` : ""}`;
 }
 
+function FinishedShowChoice({ record, analysis, tracker, checked, value, uncheckedLabel = "Treat as fully watched", onToggle, onChange }: {
+  record: ImportShowRecord;
+  analysis: ImportAnalysis;
+  tracker: Tracker;
+  checked: boolean;
+  value: ActiveProgressChoice | undefined;
+  uncheckedLabel?: string;
+  onToggle: (checked: boolean) => void;
+  onChange: (choice: ActiveProgressChoice | undefined) => void;
+}) {
+  const title = record.imdb?.title ?? record.provider?.name ?? "Untitled show", episodes = availableEpisodes(record, analysis, tracker);
+  const selectValue = value?.kind === "last_watched" ? String(value.tvmazeEpisodeId) : value?.kind === "manual" ? "manual" : "";
+  const manualIds = value?.kind === "manual" ? value.watchedTvmazeEpisodeIds : [];
+  return <article className={`onboarding-show-choice ${checked ? "selected" : ""}`}>
+    <label className="choice-heading"><input type="checkbox" checked={checked} onChange={(event) => onToggle(event.target.checked)}/><Poster title={title} {...posterUrls(record.provider)}/><span><strong>{title}</strong><small>{checked ? "Progress needed" : uncheckedLabel}</small></span></label>
+    {checked && <div className="quick-progress"><label>Latest episode watched<select value={selectValue} onChange={(event) => {
+      if (!event.target.value) onChange(undefined);
+      else if (event.target.value !== "manual") onChange({ kind: "last_watched", tvmazeEpisodeId: Number(event.target.value) });
+    }}><option value="">None — not started</option>{selectValue === "manual" && <option value="manual" disabled>Manual episode selection</option>}{episodes.map((episode) => <option key={episode.id} value={episode.id}>{episodeLabel(episode)}</option>)}</select></label>
+      <small>Selecting an episode marks it and every earlier aired regular episode watched.</small>
+      <details className="manual-progress"><summary>Select individual episodes instead</summary><fieldset className="episode-choice"><legend className="sr-only">Watched episodes for {title}</legend>{episodes.map((episode) => { const episodeChecked = manualIds.includes(episode.id); return <label key={episode.id}><input type="checkbox" checked={episodeChecked} onChange={(event) => onChange({ kind: "manual", watchedTvmazeEpisodeIds: event.target.checked ? [...manualIds, episode.id] : manualIds.filter((id) => id !== episode.id) })}/>{episodeLabel(episode)}</label>; })}</fieldset></details>
+    </div>}
+  </article>;
+}
+
 function DecisionsView({ analysis, tracker, decisions, setDecisions }: {
   analysis: ImportAnalysis;
   tracker: Tracker;
   decisions: ImportDecisions;
   setDecisions: (value: ImportDecisions) => void;
 }) {
+  const [setupSearch, setSetupSearch] = useState(""), [setupFilter, setSetupFilter] = useState<"all" | "selected" | "unselected">("all");
   const timing = recordTiming(analysis, tracker);
   const imdbOnly = analysis.records.filter((record) => record.kind === "imdb_only" && record.provider);
   const finished = imdbOnly.filter((record) => classifyOnboardingShow({ id: record.id, providerStatus: record.provider!.status, episodes: record.episodes }, timing) === "finished")
     .sort((a, b) => (b.imdb?.created ?? "").localeCompare(a.imdb?.created ?? ""));
-  const active = imdbOnly.filter((record) => !finished.includes(record))
-    .sort((a, b) => (b.imdb?.created ?? "").localeCompare(a.imdb?.created ?? ""));
+  const orderedImdbOnly = [...imdbOnly].sort((a, b) => (b.imdb?.created ?? "").localeCompare(a.imdb?.created ?? ""));
+  const finishedIds = new Set(finished.map((record) => record.id));
   const tvTimeOnly = analysis.records.filter((record) => record.kind === "tvtime_only");
   const conflicts = analysis.records.filter((record) => record.kind === "conflict");
   const updateChoice = (id: string, choice: ActiveProgressChoice | undefined) => setDecisions({ ...decisions, progressChoices: {
     ...decisions.progressChoices,
     ...(choice ? { [id]: choice } : {}),
   }});
-  const clearChoice = (id: string, choice: ActiveProgressChoice | undefined) => {
-    if (choice) { updateChoice(id, choice); return; }
-    const next = { ...decisions.progressChoices }; delete next[id]; setDecisions({ ...decisions, progressChoices: next });
+  const toggleFinished = (id: string, checked: boolean) => {
+    const progressChoices = { ...decisions.progressChoices };
+    if (!checked) delete progressChoices[id];
+    setDecisions({ ...decisions, progressChoices, finishedNotStartedRecordIds: checked
+      ? [...new Set([...decisions.finishedNotStartedRecordIds, id])]
+      : decisions.finishedNotStartedRecordIds.filter((candidate) => candidate !== id) });
   };
+  const setFinishedChoice = (id: string, choice: ActiveProgressChoice | undefined) => {
+    const progressChoices = { ...decisions.progressChoices };
+    if (choice) progressChoices[id] = choice; else delete progressChoices[id];
+    setDecisions({ ...decisions, progressChoices, finishedNotStartedRecordIds: [...new Set([...decisions.finishedNotStartedRecordIds, id])] });
+  };
+  const isSelected = (record: ImportShowRecord) => finishedIds.has(record.id)
+    ? decisions.finishedNotStartedRecordIds.includes(record.id)
+    : Boolean(decisions.progressChoices[record.id] && decisions.progressChoices[record.id]?.kind !== "caught_up");
+  const toggleImdbShow = (record: ImportShowRecord, checked: boolean) => finishedIds.has(record.id)
+    ? toggleFinished(record.id, checked)
+    : updateChoice(record.id, { kind: checked ? "not_started" : "caught_up" });
+  const setImdbProgress = (record: ImportShowRecord, choice: ActiveProgressChoice | undefined) => finishedIds.has(record.id)
+    ? setFinishedChoice(record.id, choice)
+    : updateChoice(record.id, choice ?? { kind: "not_started" });
+  const visibleImdbOnly = orderedImdbOnly.filter((record) => {
+    const selected = isSelected(record), title = (record.imdb?.title ?? record.provider?.name ?? "").toLowerCase();
+    return title.includes(setupSearch.trim().toLowerCase()) && (setupFilter === "all" || (setupFilter === "selected" ? selected : !selected));
+  });
   return <>
     {(analysis.report.unmatchedShows > 0 || analysis.report.unresolvedEpisodes > 0 || analysis.report.numberingConflicts.length > 0) && <section className="report attention-summary"><h2>{analysis.report.unmatchedShows + new Set(analysis.report.unresolvedEpisodeRecords.map((episode) => episode.show)).size} shows need attention</h2>
       <p>Matched shows will still import. Unmatched shows are skipped, and any remaining unmapped TV Time episode states are listed in the report without blocking the import.</p>
@@ -233,20 +280,8 @@ function DecisionsView({ analysis, tracker, decisions, setDecisions }: {
         excludedConflictRecordIds: event.target.checked ? [...decisions.excludedConflictRecordIds, record.id] : decisions.excludedConflictRecordIds.filter((id) => id !== record.id) })}/>
         Exclude {record.imdb?.title ?? record.tvtime?.title ?? record.id}: {record.conflict?.reason}</label>)}</section>}
     {tvTimeOnly.length > 0 && <section className="report auto-included"><h2>{tvTimeOnly.length} TV Time shows will be added automatically</h2><p>These shows have confident provider matches. Their mapped watched and unwatched history will be imported without additional choices.</p></section>}
-    {finished.length > 0 && <section className="report"><h2>Finished IMDb-only shows</h2><fieldset><legend>What does this IMDb list contain?</legend>
-      <label className="decision-row"><input type="radio" name="finished-mode" checked={decisions.finishedMode === "watched_everything"} onChange={() => setDecisions({ ...decisions, finishedMode: "watched_everything" })}/>I have watched everything in this list</label>
-      <label className="decision-row"><input type="radio" name="finished-mode" checked={decisions.finishedMode === "mixture"} onChange={() => setDecisions({ ...decisions, finishedMode: "mixture" })}/>This list is a mixture</label>
-    </fieldset>{decisions.finishedMode === "mixture" && <><h3>Select the shows you have not watched yet.</h3>{finished.map((record) => <label className="decision-row" key={record.id}><input type="checkbox"
-      checked={decisions.finishedNotStartedRecordIds.includes(record.id)} onChange={(event) => setDecisions({ ...decisions, finishedNotStartedRecordIds: event.target.checked
-        ? [...decisions.finishedNotStartedRecordIds, record.id]
-        : decisions.finishedNotStartedRecordIds.filter((id) => id !== record.id) })}/>{record.imdb?.title ?? record.provider?.name}</label>)}</>}
-      {decisions.finishedMode && finished.map((record) => <details className="decision-card" key={record.id}><summary>Refine progress for {record.imdb?.title ?? record.provider?.name}</summary>
-        <ProgressEditor record={record} analysis={analysis} tracker={tracker} value={decisions.progressChoices[record.id]} onChange={(choice) => clearChoice(record.id, choice)} optional/>
-      </details>)}</section>}
-    {active.length > 0 && <section className="report"><h2>Active, incomplete or uncertain IMDb-only shows</h2><p>Currently aired episodes remain unwatched until you choose a progress action.</p>
-      {active.map((record) => { const title = record.imdb?.title ?? record.provider?.name ?? "Untitled show"; return <article className="decision-card progress-card" key={record.id}><Poster title={title} {...posterUrls(record.provider)}/><div><span className="badge accent">Needs setup</span><h3>{title}</h3>
-        <ProgressEditor record={record} analysis={analysis} tracker={tracker} value={decisions.progressChoices[record.id]} onChange={(choice) => clearChoice(record.id, choice)}/></div>
-      </article>; })}</section>}
+    {orderedImdbOnly.length > 0 && <section className="report"><div className="setup-heading"><div><h2>IMDb shows without TV Time history</h2><p>Leave shows you watched through the import date unselected. Select only shows you have not fully watched, then optionally choose the latest episode watched.</p></div><span className="count">{orderedImdbOnly.filter(isSelected).length}</span></div><div className="setup-toolbar"><label className="search"><span aria-hidden="true">⌕</span><span className="sr-only">Search IMDb shows without TV Time history</span><input value={setupSearch} onChange={(event) => setSetupSearch(event.target.value)} placeholder="Search shows"/></label><div className="filter-tabs" role="group" aria-label="Filter IMDb shows without TV Time history">{(["all", "selected", "unselected"] as const).map((filter) => <button type="button" className={setupFilter === filter ? "active" : ""} aria-pressed={setupFilter === filter} key={filter} onClick={() => setSetupFilter(filter)}>{filter === "all" ? "All" : filter === "selected" ? "Selected" : "Not selected"}</button>)}</div></div><div className="onboarding-show-grid">
+      {visibleImdbOnly.map((record) => { const selected = isSelected(record); return <FinishedShowChoice key={record.id} record={record} analysis={analysis} tracker={tracker} checked={selected} value={selected ? decisions.progressChoices[record.id] : undefined} uncheckedLabel="Watched through import date" onToggle={(checked) => toggleImdbShow(record, checked)} onChange={(choice) => setImdbProgress(record, choice)}/>; })}</div>{visibleImdbOnly.length === 0 && <p className="empty-inline">No shows match this search and filter.</p>}</section>}
   </>;
 }
 
@@ -265,11 +300,13 @@ function FinalPreviewView({ preview, decisions, updateDecisions }: {
     const selected = new Set(decisions.replaceLocalProgressKeys); keys.forEach((key) => replace ? selected.add(key) : selected.delete(key));
     updateDecisions({ ...decisions, replaceLocalProgressKeys: [...selected] });
   };
-  return <section className="report"><h2>Final import preview</h2><p>{preview.committedShows} shows will be committed: {preview.newShows} new and {preview.updatedShows} updated.</p>
-    <p>{preview.watchedStates} watched states and {preview.explicitUnwatchedStates} explicit unwatched states are prepared.</p>
-    <details className="record-list" open><summary>Per-show changes ({preview.plans.length})</summary><ul>{preview.plans.map((plan) => <li key={plan.recordId}>
-      <strong>{plan.title}</strong> — {preview.operationByRecordId[plan.recordId]} · state: {plan.desiredState.replace("_", " ")} · sources: {plan.sources.join(" + ")} · {plan.progress.filter((state) => state.watched).length} watched / {plan.progress.filter((state) => !state.watched).length} unwatched
-    </li>)}</ul></details>
+  const fullyWatched = preview.plans.filter((plan) => plan.desiredState === "completed" || plan.desiredState === "caught_up");
+  const exceptions = preview.plans.filter((plan) => !fullyWatched.includes(plan));
+  const completed = fullyWatched.filter((plan) => plan.desiredState === "completed").length, caughtUp = fullyWatched.length - completed;
+  return <section className="report final-preview"><div className="preview-title"><div><p className="eyebrow">Ready to commit</p><h2>Final import preview</h2><p>Review the exceptions below. Shows that are fully watched are grouped together.</p></div><span className="count">{preview.committedShows}</span></div>
+    <div className="preview-summary"><div><strong>{fullyWatched.length}</strong><span>Fully watched</span><small>through import date</small></div><div><strong>{exceptions.length}</strong><span>Different progress</span><small>listed below</small></div><div><strong>{preview.newShows}</strong><span>New shows</span><small>{preview.updatedShows} updated</small></div><div><strong>{conflictGroups.size}</strong><span>Local conflicts</span><small>{conflictGroups.size ? "review choices below" : "none"}</small></div></div>
+    {fullyWatched.length > 0 && <div className="fully-watched-summary"><span className="summary-check" aria-hidden="true">✓</span><div><strong>{fullyWatched.length} show{fullyWatched.length === 1 ? "" : "s"} watched through the import date</strong><p>{completed > 0 && `${completed} ended show${completed === 1 ? "" : "s"} marked completed`}{completed > 0 && caughtUp > 0 ? " · " : ""}{caughtUp > 0 && `${caughtUp} ongoing show${caughtUp === 1 ? "" : "s"} marked caught up`}.</p></div></div>}
+    {exceptions.length > 0 && <div className="preview-exceptions"><h3>Shows with different progress</h3><div className="preview-exception-grid">{exceptions.map((plan) => { const watched = plan.progress.filter((state) => state.watched).length, unwatched = plan.progress.filter((state) => !state.watched).length; return <article key={plan.recordId}><div><strong>{plan.title}</strong><span className="badge">{preview.operationByRecordId[plan.recordId]}</span></div><p><span className="badge accent">{plan.desiredState.replaceAll("_", " ")}</span>{watched > 0 && <span>{watched} watched</span>}{unwatched > 0 && <span>{unwatched} unwatched</span>}{plan.progress.length === 0 && <span>No aired progress records</span>}</p></article>; })}</div></div>}
     {preview.missingDecisions.length > 0 && <div className="error" role="alert"><strong>More decisions are required:</strong><ul>{preview.missingDecisions.map((message) => <li key={message}>{message}</li>)}</ul></div>}
     {conflictGroups.size > 0 && <div className="reimport-conflicts"><h3>Reimport conflicts with later local decisions</h3><p><strong>Your local choices are preserved by default.</strong> Use imported values only where the source should replace a decision you made later in Tracker.</p>{[...conflictGroups.entries()].map(([recordId, group]) => {
       const keys = [...(group.state ? [group.state.key] : []), ...group.episodes.map((episode) => episode.key)], allImported = keys.every((key) => decisions.replaceLocalProgressKeys.includes(key));
@@ -375,6 +412,17 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
     }
   }
 
+  function openDecisions() {
+    if (!analysis || !tracker.local) return;
+    const timing = recordTiming(analysis, tracker), progressChoices = { ...decisions.progressChoices };
+    for (const record of analysis.records.filter((candidate) => candidate.kind === "imdb_only" && candidate.provider)) {
+      if (classifyOnboardingShow({ id: record.id, providerStatus: record.provider!.status, episodes: record.episodes }, timing) !== "finished" && !progressChoices[record.id]) {
+        progressChoices[record.id] = { kind: "caught_up" };
+      }
+    }
+    setDecisions({ ...decisions, finishedMode: "mixture", progressChoices }); setPhase("decisions");
+  }
+
   function openPreview() {
     if (!analysis || !tracker.local) return;
     const next = buildImportPreview(analysis, decisions, tracker.local);
@@ -398,12 +446,13 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
   }
 
   const current = phaseStage(phase, stageProgress);
+  const operationBusy = Boolean(stageProgress) || phase === "analyzing" || phase === "committing";
   return <><h1>Import</h1><p>Select an IMDb CSV and/or a TV Time ZIP. Analysis remains temporary until the final commit.</p>
     {FIXTURE_SUBSET_MODE && <p className="fixture-banner">{FIXTURE_BANNER}</p>}
     <ImportSteps current={current}/>
     <CountStrip imdb={imdb} tvtime={tvtime} analysis={analysis} committed={commitResult?.committed ?? 0}/>
-    <section className="report source-picker"><h2>1. Select files</h2><label className="file-drop" htmlFor="import-files" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (phase !== "committing") void processFiles(Array.from(event.dataTransfer.files)); }}><span aria-hidden="true">⇧</span><strong>Drop IMDb CSV and TV Time ZIP here</strong><small>or choose files from your computer</small><input id="import-files" type="file" multiple accept=".csv,.zip" disabled={phase === "committing"} onChange={(event) => void choose(event)}/></label>
-      {filenames.length > 0 && <div className="selected-files" aria-label="Selected files">{filenames.map((filename) => <span className="badge" key={filename}>{filename}</span>)}</div>}{phase !== "select" && <button type="button" disabled={phase === "committing"} onClick={reset}>Cancel import</button>}
+    <section className="report source-picker"><h2>1. Select files</h2><label className={`file-drop ${operationBusy ? "disabled" : ""}`} htmlFor="import-files" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (!operationBusy) void processFiles(Array.from(event.dataTransfer.files)); }}><span aria-hidden="true">⇧</span><strong>Drop IMDb CSV and TV Time ZIP here</strong><small>or choose files from your computer</small><input id="import-files" type="file" multiple accept=".csv,.zip" disabled={operationBusy} onChange={(event) => void choose(event)}/></label>
+      {filenames.length > 0 && <div className="selected-files" aria-label="Selected files">{filenames.map((filename) => <span className="badge" key={filename}>{filename}</span>)}</div>}{(phase !== "select" || operationBusy) && <button type="button" onClick={reset}>{operationBusy ? "Cancel current operation" : "Cancel import"}</button>}
     </section>
     {error && <ErrorPanel title={error.title} message={error.message} retry={phase === "report" && analysis?.report.providerErrors.length ? () => void runAnalysis() : phase === "preview" ? () => void commit() : undefined}/>} 
     {stageProgress && <section className="report" aria-live="polite"><h2>{steps.find((step) => step.stage === stageProgress.stage)?.label}</h2><p>{stageProgress.message}</p><progress aria-label={stageProgress.message} value={stageProgress.completed} max={Math.max(1, stageProgress.total)}/><div className="import-skeleton" aria-hidden="true"><span/><span/><span/></div></section>}
@@ -414,7 +463,7 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
     {analysis && ["report", "decisions", "preview", "committing", "complete"].includes(phase) && <ImportReportView analysis={analysis}/>} 
     {phase === "report" && analysis && <div className="import-actions">{analysis.report.providerErrors.length > 0
       ? <button className="primary" type="button" onClick={() => void runAnalysis()}>Retry failed requests</button>
-      : <button className="primary" type="button" onClick={() => setPhase("decisions")}>Continue to progress setup</button>}</div>}
+      : <button className="primary" type="button" onClick={openDecisions}>Continue to progress setup</button>}</div>}
     {phase === "decisions" && analysis && <><DecisionsView analysis={analysis} tracker={tracker} decisions={decisions} setDecisions={setDecisions}/><div className="import-actions">
       <button type="button" onClick={() => setPhase("report")}>Back to report</button><button className="primary" type="button" onClick={openPreview}>Build final preview</button>
     </div></>}
