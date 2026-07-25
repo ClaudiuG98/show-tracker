@@ -1,19 +1,24 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { strToU8, zipSync } from "fflate";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DomainState } from "../../src/domain/selectors";
-import { Library, ShowDetail, Upcoming, WatchList } from "../../src/ui/App";
+import { EpisodeDetail, Library, SettingsPage, ShowDetail, Upcoming, WatchList } from "../../src/ui/App";
 import { Poster } from "../../src/ui/components/Poster";
+import { ImportPage } from "../../src/ui/import/ImportPage";
+import { resetImportStore, useImportStore } from "../../src/ui/import/import-store";
 import type { useTracker } from "../../src/ui/useTracker";
+import { emptyImportDecisions } from "../../src/imports/preview";
+import type { ImportAnalysis } from "../../src/imports/session";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); resetImportStore(); vi.restoreAllMocks(); });
 
 const show = { id: "local-1", externalIds: { imdb: "tt1", tvmazeShow: 10 }, titleSnapshot: "Silo", userState: "watching" as const,
-  importSources: ["manual" as const], createdAt: "2024-01-01", updatedAt: "2024-01-01" };
+  tvTimeRating: 4, importSources: ["manual" as const], createdAt: "2024-01-01", updatedAt: "2024-01-01" };
 const domain: DomainState = {
   settings: { timezone: "UTC", dateOnlyReleaseHour: "09:00" }, shows: [show], progress: [],
   providerShows: [{ provider: "tvmaze", id: 10, name: "Silo", status: "running", externalIds: { tvmazeShow: 10 },
-    image: { medium: "https://static.tvmaze.com/medium.jpg", original: "https://static.tvmaze.com/original.jpg" }, updatedAt: 1 }],
+    image: { medium: "https://static.tvmaze.com/medium.jpg", original: "https://static.tvmaze.com/original.jpg" }, rating: 8.3, updatedAt: 1 }],
   episodes: [
     { id: 1, showId: 10, season: 1, number: 1, name: "Freedom Day", kind: "regular", airstamp: "2024-01-01T20:00:00Z" },
     { id: 2, showId: 10, season: 1, number: 2, name: "Holston's Pick", kind: "regular", airstamp: "2024-01-08T20:00:00Z" },
@@ -37,12 +42,14 @@ describe("poster presentation", () => {
 });
 
 describe("dashboard cards", () => {
-  it("renders the Watch List poster, backlog count, and advances optimistically", () => {
+  it("renders the Watch List poster, backlog count, and advances optimistically", async () => {
     let resolve!: () => void; const markEpisode = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
     render(<MemoryRouter><WatchList tracker={tracker({ markEpisode })}/></MemoryRouter>);
     expect(screen.getByText("+1 more")).toBeVisible(); expect(screen.getByRole("img", { name: "Silo poster" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Open Silo episode details: Freedom Day" })).toHaveAttribute("href", "#/show/local-1/episode/1");
     fireEvent.click(screen.getByRole("button", { name: /Mark Freedom Day watched/ }));
-    expect(screen.queryByText("Freedom Day")).not.toBeInTheDocument(); resolve();
+    expect(screen.getByText("Freedom Day").closest("article")).toHaveClass("completing");
+    await waitFor(() => expect(markEpisode).toHaveBeenCalled()); resolve();
   });
 
   it("renders the nearest Upcoming release with date-only and later count", () => {
@@ -56,15 +63,209 @@ describe("dashboard cards", () => {
     fireEvent.click(screen.getByRole("button", { name: "Paused" })); expect(screen.queryByText("Silo")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Watching" })); expect(screen.getByText("Silo")).toBeVisible();
   });
+
+  it("sorts the Library by source dates, watch activity, release, title, and both ratings", () => {
+    const { tvTimeRating: _tvTimeRating, ...unratedShow } = show;
+    const shows = [
+      { ...show, id: "alpha", externalIds: { tvmazeShow: 11 }, titleSnapshot: "Alpha", imdbAddedAt: "2024-01-01", tvTimeAddedAt: "2020-01-01", tvTimeRating: 5 },
+      { ...show, id: "beta", externalIds: { tvmazeShow: 12 }, titleSnapshot: "Beta", tvTimeAddedAt: "2025-01-01", tvTimeRating: 3 },
+      { ...unratedShow, id: "gamma", externalIds: { tvmazeShow: 13 }, titleSnapshot: "Gamma", createdAt: "2026-01-01" },
+    ];
+    const progress = [
+      { localShowId: "alpha", tvmazeEpisodeId: 101, season: 1, episode: 1, watched: true, watchedAt: "2026-03-01T00:00:00Z", source: "user" as const },
+      { localShowId: "beta", tvmazeEpisodeId: 102, season: 1, episode: 1, watched: true, watchedAt: "2026-02-01T00:00:00Z", source: "user" as const },
+    ];
+    const sortableDomain: DomainState = { ...domain, shows, progress,
+      providerShows: [
+        { ...domain.providerShows[0]!, id: 11, name: "Alpha", externalIds: { tvmazeShow: 11 }, rating: 7 },
+        { ...domain.providerShows[0]!, id: 12, name: "Beta", externalIds: { tvmazeShow: 12 }, rating: 9 },
+        { ...domain.providerShows[0]!, id: 13, name: "Gamma", externalIds: { tvmazeShow: 13 }, rating: 8 },
+      ],
+      episodes: [
+        { id: 201, showId: 11, season: 1, number: 1, kind: "regular", airdate: "2027-02-01" },
+        { id: 202, showId: 12, season: 1, number: 1, kind: "regular", airdate: "2027-01-01" },
+      ],
+    };
+    render(<MemoryRouter><Library tracker={tracker({ domain: sortableDomain, local: { ...tracker().local!, shows, progress, settings: sortableDomain.settings, history: [] }, now: new Date("2026-01-01T00:00:00Z") })}/></MemoryRouter>);
+    const titles = () => within(screen.getByRole("region", { name: "Tracked shows" })).getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent);
+    const sort = screen.getByRole("combobox", { name: "Sort by" });
+
+    expect(titles()).toEqual(["Gamma", "Beta", "Alpha"]);
+    fireEvent.change(sort, { target: { value: "recently_watched" } }); expect(titles()).toEqual(["Alpha", "Beta", "Gamma"]);
+    fireEvent.change(sort, { target: { value: "next_release" } }); expect(titles()).toEqual(["Beta", "Alpha", "Gamma"]);
+    fireEvent.change(sort, { target: { value: "title" } }); expect(titles()).toEqual(["Alpha", "Beta", "Gamma"]);
+    fireEvent.change(sort, { target: { value: "tvtime_rating" } }); expect(titles()).toEqual(["Alpha", "Beta", "Gamma"]);
+    fireEvent.change(sort, { target: { value: "tvmaze_rating" } }); expect(titles()).toEqual(["Beta", "Gamma", "Alpha"]);
+  });
+
+  it("formats watched history like show-detail dates", () => {
+    const action = { id: "history-1", showId: show.id, episodeKeys: ["1"], action: "watched" as const,
+      before: { episodes: [], userState: "watching" as const }, after: { episodes: [], userState: "watching" as const }, occurredAt: "2022-10-11T12:30:00Z" };
+    render(<MemoryRouter><WatchList tracker={tracker({ local: { ...tracker().local!, shows: [show], progress: [], settings: domain.settings, history: [action] } })}/></MemoryRouter>);
+    fireEvent.click(screen.getByText(/Watched history/));
+    expect(screen.getByText("Oct 11, 2022")).toBeVisible();
+  });
+
+  it("shows ratings on Library cards only", () => {
+    const current = tracker();
+    render(<MemoryRouter><WatchList tracker={current}/></MemoryRouter>);
+    expect(screen.queryByLabelText("TVMaze rating 8.3 out of 10")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("TV Time rating 4.0 out of 5")).not.toBeInTheDocument();
+
+    cleanup();
+    render(<MemoryRouter><Upcoming tracker={current}/></MemoryRouter>);
+    expect(screen.queryByLabelText("TVMaze rating 8.3 out of 10")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("TV Time rating 4.0 out of 5")).not.toBeInTheDocument();
+
+    cleanup();
+    render(<MemoryRouter><Library tracker={current}/></MemoryRouter>);
+    expect(screen.getByLabelText("TVMaze rating 8.3 out of 10")).toBeVisible();
+    expect(screen.getByLabelText("TV Time rating 4.0 out of 5")).toBeVisible();
+  });
+});
+
+describe("route-independent operation status", () => {
+  it("explains both export sources and keeps files chosen in separate picker sessions", async () => {
+    render(<MemoryRouter><ImportPage tracker={tracker()}/></MemoryRouter>);
+    expect(screen.getByRole("heading", { name: "Get your export files" })).toBeVisible();
+    expect(screen.getByRole("link", { name: /Open your IMDb lists/ })).toHaveAttribute("href", "https://www.imdb.com/profile/lists");
+    expect(screen.getByRole("link", { name: /Open TV Time data export/ })).toHaveAttribute("href", "https://gdpr.tvtime.com/gdpr/self-service");
+
+    const input = document.querySelector<HTMLInputElement>("#import-files")!;
+    const silo = { name: "silo.csv", size: 70, lastModified: 1, text: async () => "Const,Title,Title Type,Created\ntt14688458,Silo,TV Series,2024-01-01" } as File;
+    fireEvent.change(input, { target: { files: [silo] } });
+    await waitFor(() => expect(useImportStore.getState().selectedFiles).toHaveLength(1));
+
+    const archive = zipSync({ "followed_tv_show.csv": strToU8("tv_show_id,created_at,updated_at,active,archived,tv_show_name\n403245,2022-10-11 12:30:00,2022-10-11 12:30:00,1,0,Silo") });
+    const gdpr = { name: "gdpr-data.zip", size: archive.byteLength, lastModified: 2,
+      arrayBuffer: async () => archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength) } as File;
+    fireEvent.change(input, { target: { files: [gdpr] } });
+    await waitFor(() => expect(useImportStore.getState().selectedFiles).toHaveLength(2));
+
+    expect(within(screen.getByLabelText("Selected files")).getByText("silo.csv")).toBeVisible();
+    expect(within(screen.getByLabelText("Selected files")).getByText("gdpr-data.zip")).toBeVisible();
+    expect(useImportStore.getState().imdb?.rows.map((row) => row.title)).toEqual(["Silo"]);
+    expect(useImportStore.getState().tvtime?.shows.map((item) => item.title)).toEqual(["Silo"]);
+  });
+
+  it("restores an in-progress import after the Import page remounts", () => {
+    useImportStore.setState({ phase: "analyzing", stageProgress: { stage: "resolve_ids", completed: 2, total: 5, message: "Resolving 2 of 5 shows." } });
+    const current = tracker();
+    const first = render(<MemoryRouter><ImportPage tracker={current}/></MemoryRouter>);
+    expect(screen.getByText("Resolving 2 of 5 shows.")).toBeVisible();
+    first.unmount();
+
+    render(<MemoryRouter><ImportPage tracker={current}/></MemoryRouter>);
+    expect(screen.getByText("Resolving 2 of 5 shows.")).toBeVisible();
+    expect(screen.getByRole("progressbar", { name: "Resolving 2 of 5 shows." })).toHaveValue(2);
+  });
+
+  it("renders the parent refresh operation when Settings remounts", () => {
+    const current = tracker({ metadataAction: "refresh" });
+    const first = render(<MemoryRouter><SettingsPage tracker={current}/></MemoryRouter>);
+    expect(screen.getByRole("button", { name: "Checking 1 shows…" })).toHaveAttribute("aria-busy", "true");
+    first.unmount();
+
+    render(<MemoryRouter><SettingsPage tracker={current}/></MemoryRouter>);
+    expect(screen.getByRole("button", { name: "Checking 1 shows…" })).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("lets the user review any unresolved episodes that remain", () => {
+    const unresolved = { show: "Example", tvdbEpisodeId: 999, season: 2, episode: 1, name: "Episode 1", reason: "No compatible episode." };
+    const analysis: ImportAnalysis = {
+      sessionId: "session",
+      importedAt: "2026-01-01T00:00:00Z",
+      counts: { imdbRowsParsed: 0, tvTimeShowsParsed: 1, tvTimeEpisodesParsed: 1 },
+      records: [],
+      providerShows: [],
+      episodesByShow: new Map(),
+      report: {
+        imdbRowsParsed: 0, tvTimeShowsParsed: 1, exactImdbMatches: 0, exactTvdbMatches: 1,
+        successfullyMerged: 0, imdbOnly: 0, tvTimeOnly: 0, conflicts: 0, unmatchedShows: 0, tvTimeEpisodesParsed: 1,
+        watchedEpisodesMapped: 0, explicitUnwatchedEpisodesMapped: 0, futureEpisodesExcludedFromBacklog: 0, specialsExcluded: 0,
+        unresolvedEpisodes: 1, showsRequiringProgressSetup: 0, providerNetworkErrors: 0, conflictNames: [], unmatchedNames: [],
+        tvTimeOnlyNames: [], unresolvedEpisodeRecords: [unresolved], numberingConflicts: [], providerErrors: [],
+      },
+    };
+    useImportStore.setState({ phase: "decisions", analysis, decisions: emptyImportDecisions() });
+
+    render(<MemoryRouter><ImportPage tracker={tracker()}/></MemoryRouter>);
+    const review = screen.getByRole("checkbox", { name: /I reviewed the 1 unmapped episode record/ });
+    expect(review).not.toBeChecked();
+    fireEvent.click(review);
+    expect(review).toBeChecked();
+    expect(useImportStore.getState().decisions.unresolvedReviewed).toBe(true);
+  });
 });
 
 describe("show seasons", () => {
-  it("groups episodes, displays original artwork, and protects future episodes from season bulk actions", () => {
+  it("returns detail pages to the route that opened them", () => {
+    vi.spyOn(window.history, "length", "get").mockReturnValue(2);
     const current = tracker();
+    const episodeView = render(
+      <MemoryRouter initialEntries={["/watch-list", "/show/local-1/episode/1"]} initialIndex={1}>
+        <Routes>
+          <Route path="/watch-list" element={<h1>Watch List origin</h1>}/>
+          <Route path="/show/:id/episode/:episodeId" element={<EpisodeDetail tracker={current}/>}/>
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("link", { name: /Next episode S01 · E02/ }));
+    expect(screen.getByRole("heading", { name: "Holston's Pick" })).toBeVisible();
+    fireEvent.click(screen.getByRole("link", { name: /Next episode S01 · E03/ }));
+    expect(screen.getByRole("heading", { name: "Future" })).toBeVisible();
+    fireEvent.click(screen.getByRole("link", { name: /Go back/ }));
+    expect(screen.getByRole("heading", { name: "Watch List origin" })).toBeVisible();
+
+    episodeView.unmount();
+    render(
+      <MemoryRouter initialEntries={["/upcoming", "/show/local-1"]} initialIndex={1}>
+        <Routes>
+          <Route path="/upcoming" element={<h1>Upcoming origin</h1>}/>
+          <Route path="/show/:id" element={<ShowDetail tracker={current}/>}/>
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("link", { name: /Go back/ }));
+    expect(screen.getByRole("heading", { name: "Upcoming origin" })).toBeVisible();
+  });
+
+  it("renders episode metadata, adjacent episode navigation, and watched control", async () => {
+    const episodes = domain.episodes.map((episode) => episode.id === 2 ? { ...episode, runtimeMinutes: 52, rating: 8.7,
+      summary: "Holston explains what happened outside the silo.", image: { original: "https://static.tvmaze.com/episode.jpg" } } : episode);
+    const detailedDomain = { ...domain, episodes };
+    const current = tracker({ domain: detailedDomain, local: { ...tracker().local!, shows: [show], progress: [], settings: detailedDomain.settings, history: [] } });
+    render(<MemoryRouter initialEntries={["/show/local-1/episode/2"]}><Routes><Route path="/show/:id/episode/:episodeId" element={<EpisodeDetail tracker={current}/>}/></Routes></MemoryRouter>);
+
+    expect(screen.getByRole("heading", { name: "Holston's Pick", level: 1 })).toBeVisible();
+    expect(screen.getByText("Holston explains what happened outside the silo.")).toBeVisible();
+    expect(screen.getByText("8.7 / 10")).toBeVisible();
+    expect(screen.getByText("Monday, January 8th, 2024")).toBeVisible();
+    expect(screen.queryByText(/8:00 PM/)).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Holston's Pick episode still" })).toHaveAttribute("src", "https://static.tvmaze.com/episode.jpg");
+    expect(screen.getByRole("link", { name: /Previous episode S01 · E01 Freedom Day/ })).toHaveAttribute("href", "#/show/local-1/episode/1");
+    expect(screen.getByRole("link", { name: /Next episode S01 · E03 Future/ })).toHaveAttribute("href", "#/show/local-1/episode/3");
+
+    const mark = screen.getByRole("button", { name: "Mark watched" });
+    expect(mark).toHaveTextContent("✓");
+    fireEvent.click(mark);
+    await waitFor(() => expect(current.markEpisode).toHaveBeenCalledWith(show, 2, true));
+  });
+
+  it("groups episodes, displays original artwork, and protects future episodes from season bulk actions", () => {
+    const episodeStill = "https://static.tvmaze.com/freedom-day.jpg";
+    const showDomain = { ...domain, episodes: domain.episodes.map((episode) => episode.id === 1 ? { ...episode, image: { medium: episodeStill } } : episode) };
+    const current = tracker({ domain: showDomain });
     render(<MemoryRouter initialEntries={["/show/local-1"]}><Routes><Route path="/show/:id" element={<ShowDetail tracker={current}/>}/></Routes></MemoryRouter>);
     expect(screen.getByText("Season 1")).toBeVisible(); expect(screen.getByText("0 / 3 watched")).toBeVisible();
     expect(screen.getByRole("img", { name: "Silo poster" })).toHaveAttribute("src", "https://static.tvmaze.com/original.jpg");
-    fireEvent.click(screen.getByRole("button", { name: "Mark aired season watched" }));
+    expect(screen.getByText("TV Time rating")).toBeVisible();
+    const episodeLink = screen.getByRole("link", { name: "Open episode details: Freedom Day" });
+    const episodeImage = screen.getByRole("img", { name: "Freedom Day episode still" });
+    expect(episodeLink).toHaveAttribute("href", "#/show/local-1/episode/1");
+    expect(episodeLink).toContainElement(episodeImage);
+    expect(episodeLink).not.toContainElement(screen.getByRole("button", { name: "Mark watched: Freedom Day" }));
+    fireEvent.click(screen.getByRole("button", { name: /Mark aired season watched/ }));
     expect(current.setEpisodesWatched).toHaveBeenCalledWith(show, [1, 2], true);
     expect(current.setEpisodesWatched).not.toHaveBeenCalledWith(show, expect.arrayContaining([3]), true);
   });

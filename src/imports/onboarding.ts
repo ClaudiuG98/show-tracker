@@ -19,7 +19,7 @@ export interface OnboardingShow {
 
 export type OnboardingClassification = "finished" | "active_or_uncertain";
 
-export interface OnboardingEpisodeDecision {
+interface OnboardingEpisodeDecision {
   tvmazeEpisodeId: number;
   season: number;
   episode: number;

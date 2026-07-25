@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getEpisodeAvailability } from "../domain/availability";
 import type { ActionSnapshot, TrackedShow, WatchedAction } from "../domain/models";
-import { db } from "../storage/database";
+import { db, resetMetadataCache } from "../storage/database";
 import { readLocalState, updateLocalState, type LocalState } from "../storage/local-state";
 import type { DomainState } from "../domain/selectors";
 
@@ -10,6 +10,8 @@ export function useTracker() {
   const [domain, setDomain] = useState<DomainState>();
   const [error, setError] = useState<string>();
   const [status, setStatus] = useState("");
+  const [metadataAction, setMetadataAction] = useState<"refresh" | "redownload">();
+  const [metadataError, setMetadataError] = useState("");
   const [now, setNow] = useState(() => new Date());
   const reload = useCallback(async () => {
     try {
@@ -115,5 +117,21 @@ export function useTracker() {
     await reload();
     setStatus("Show removed from tracker.");
   };
-  return { local, domain, error, status, now, reload, markEpisode, markEpisodes, setEpisodesWatched, markCaughtUp, setShowState, removeShow, undo };
+  const refreshMetadata = async (redownload = false) => {
+    setMetadataAction(redownload ? "redownload" : "refresh");
+    setMetadataError("");
+    try {
+      if (redownload) await resetMetadataCache();
+      const result = await chrome.runtime.sendMessage({ type: "SYNC_NOW" }) as { ok?: boolean; error?: string } | undefined;
+      if (!result?.ok) throw new Error(result?.error ?? "TVMaze metadata could not be refreshed.");
+      await reload();
+      setStatus(redownload ? "Metadata rebuilt." : "Metadata refreshed.");
+    } catch (cause) {
+      setMetadataError(cause instanceof Error ? cause.message : "TVMaze metadata could not be refreshed.");
+      throw cause;
+    } finally {
+      setMetadataAction(undefined);
+    }
+  };
+  return { local, domain, error, status, now, metadataAction, metadataError, reload, refreshMetadata, markEpisode, markEpisodes, setEpisodesWatched, markCaughtUp, setShowState, removeShow, undo };
 }

@@ -9,4 +9,3 @@ export const requestSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("REMOVE_SHOW"), imdbId: z.string().regex(/^tt\d+$/) }),
   z.object({ type: z.literal("SYNC_NOW") }),
 ]);
-export type TrackerRequest = z.infer<typeof requestSchema>;

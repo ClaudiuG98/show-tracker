@@ -1,10 +1,10 @@
-export type ProviderName = "tvmaze";
+type ProviderName = "tvmaze";
 export type UserShowState =
   | "watching" | "caught_up" | "not_started" | "paused"
   | "completed" | "progress_unknown";
 export type ProviderStatus = "running" | "ended" | "in_development" | "tbd" | "unknown";
 
-export interface ExternalIds {
+interface ExternalIds {
   imdb?: string;
   tvdbShow?: number;
   tvmazeShow?: number;
@@ -16,6 +16,7 @@ export interface TrackedShow {
   titleSnapshot: string;
   imdbAddedAt?: string;
   tvTimeAddedAt?: string;
+  tvTimeRating?: number;
   userState: UserShowState;
   userStateSource?: "import" | "user";
   userStateUpdatedAt?: string;
@@ -126,5 +127,3 @@ export interface TelevisionProvider {
   getAlternateEpisodeMappings?(id: number): Promise<ProviderAlternateEpisodeMapping[]>;
   getChangedShows(since: "day" | "week" | "month" | "all"): Promise<Map<number, number>>;
 }
-
-export const episodeKey = (episode: Pick<ProviderEpisode, "id">) => String(episode.id);

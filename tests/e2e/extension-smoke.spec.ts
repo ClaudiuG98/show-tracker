@@ -15,10 +15,10 @@ test("loads the unpacked extension dashboard and importer", async () => {
     worker ??= await context.waitForEvent("serviceworker");
     const extensionId = new URL(worker.url()).host;
     const page = await context.newPage();
-    await page.goto(`chrome-extension://${extensionId}/dashboard.html#/import`);
+    await page.goto(`chrome-extension://${extensionId}/dashboard.html`);
     await expect(page.getByRole("heading", { name: "Import", exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/#\/import$/);
     await expect(page.getByRole("navigation", { name: "Primary" })).toBeVisible();
-    await expect(page.getByText("Fixture subset mode:")).toHaveCount(process.env.EXPECT_FIXTURE_MODE === "1" ? 1 : 0);
     await page.setViewportSize({ width: 320, height: 720 });
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     await page.keyboard.press("Tab");

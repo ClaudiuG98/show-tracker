@@ -10,7 +10,7 @@ export interface ImdbImportRow {
   position?: number;
   userRating?: number;
 }
-export interface ImportIssue { row: number; reason: string }
+interface ImportIssue { row: number; reason: string }
 export interface ImdbParseResult {
   rows: ImdbImportRow[];
   malformed: ImportIssue[];
@@ -67,14 +67,4 @@ export function parseImdbCsv(csv: string): ImdbParseResult {
   parsed.errors.forEach((error) => malformed.push({ row: error.row === undefined ? 1 : error.row + 2, reason: error.message }));
   rows.sort((a, b) => (b.created ?? "").localeCompare(a.created ?? "") || (a.position ?? Infinity) - (b.position ?? Infinity));
   return { rows, malformed, unsupported, duplicates, totalRows: parsed.data.length, schemaErrors };
-}
-
-export function diffImdbImports(previous: ImdbImportRow[], next: ImdbImportRow[]) {
-  const before = new Map(previous.map((row) => [row.imdbId, row]));
-  const after = new Map(next.map((row) => [row.imdbId, row]));
-  return {
-    added: next.filter((row) => !before.has(row.imdbId)),
-    unchanged: next.filter((row) => before.has(row.imdbId)),
-    missing: previous.filter((row) => !after.has(row.imdbId)),
-  };
 }

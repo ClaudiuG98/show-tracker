@@ -3,10 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "overrides": {
+    "esbuild": "0.28.1",
+    "shell-quote": "1.10.0",
+    "tmp": "0.2.7",
+    "uuid": "11.1.1"
+  },
   "scripts": {
     "dev": "wxt -b chrome",
-    "dev:fixture": "wxt -b chrome -m fixture",
-    "build:fixture": "wxt build -b chrome -m fixture",
     "dev:edge": "wxt -b edge",
     "build": "wxt build -b chrome",
     "build:edge": "wxt build -b edge",
@@ -20,7 +24,6 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.83.0",
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
     "dexie": "^4.0.11",
@@ -44,7 +47,7 @@
     "fake-indexeddb": "^6.0.1",
     "jsdom": "^26.1.0",
     "typescript": "^5.8.3",
-    "vitest": "^3.2.4"
-    ,"wxt": "^0.20.27"
+    "vitest": "^3.2.4",
+    "wxt": "^0.20.27"
   }
 }

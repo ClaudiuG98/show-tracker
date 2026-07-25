@@ -41,6 +41,7 @@ function tvTimeShow(): TvTimeShow {
     tvdbShowId: 10,
     title: "Silo",
     createdAt: "2024-01-01T00:00:00Z",
+    rating: 4,
     status: "continuing",
     episodes: [
       { tvdbEpisodeId: 101, season: 1, number: 1, name: "One", special: false, watched: true, watchedAt: "2025-01-03T00:00:00Z", rewatchCount: 2 },
@@ -55,14 +56,10 @@ function selected(imdbRows: ImdbImportRow[] = [imdbRow()], tvTimeShows: TvTimeSh
   return {
     imdbRows,
     tvTimeShows,
-    fixtureSubsetMode: false,
     counts: {
       imdbRowsParsed: imdbRows.length,
       tvTimeShowsParsed: tvTimeShows.length,
       tvTimeEpisodesParsed: tvTimeShows.reduce((total, show) => total + show.episodes.length, 0),
-      imdbRowsSelected: imdbRows.length,
-      tvTimeShowsSelected: tvTimeShows.length,
-      tvTimeEpisodesSelected: tvTimeShows.reduce((total, show) => total + show.episodes.length, 0),
     },
   };
 }
@@ -93,7 +90,7 @@ beforeEach(async () => {
       set: vi.fn(async (value: { trackerState: LocalState }) => { stored = value.trackerState; }),
     } },
   });
-  await Promise.all([db.providerShows.clear(), db.episodes.clear(), db.cache.clear(), db.stagedImports.clear()]);
+  await Promise.all([db.providerShows.clear(), db.episodes.clear(), db.cache.clear()]);
 });
 
 describe("staged import analysis and commit", () => {
@@ -122,6 +119,7 @@ describe("staged import analysis and commit", () => {
     expect(result).toMatchObject({ committed: 1, watchedMapped: 1, explicitUnwatchedMapped: 2 });
     expect(stored?.shows).toHaveLength(1);
     expect(stored?.shows[0]?.userState).toBe("watching");
+    expect(stored?.shows[0]?.tvTimeRating).toBe(4);
     expect(stored?.progress.map((state) => [state.tvmazeEpisodeId, state.watched, state.source])).toEqual([
       [1, true, "tvtime"], [2, false, "tvtime"], [3, false, "tvtime"],
     ]);
@@ -154,6 +152,19 @@ describe("staged import analysis and commit", () => {
     expect(stored?.progress).toMatchObject([{ tvmazeEpisodeId: 1, watched: true, source: "tvtime" }]);
   });
 
+  it("trusts mapped watched episodes over a stale not-started TV Time summary", async () => {
+    const source: TvTimeShow = {
+      ...tvTimeShow(),
+      status: "not_started_yet",
+      episodes: tvTimeShow().episodes.map((episode) => ({ ...episode, watched: episode.season === 1 && episode.number <= 2 })),
+    };
+    const analysis = await analyzeImport({ selected: selected([imdbRow()], [source]), provider: new FakeProvider(), settings, now });
+    const preview = buildImportPreview(analysis, emptyImportDecisions(), { ...emptyLocalState(), settings });
+
+    expect(preview.plans[0]).toMatchObject({ desiredState: "caught_up" });
+    expect(preview.plans[0]?.progress.filter((episode) => episode.watched)).toHaveLength(2);
+  });
+
   it("reports a TV Time-only exact IMDb fallback match", async () => {
     const { tvdbShowId: _tvdbShowId, ...base } = tvTimeShow();
     const source: TvTimeShow = { ...base, imdbId: "tt1" };
@@ -177,7 +188,6 @@ describe("staged import analysis and commit", () => {
     expect(chrome.storage.local.set).not.toHaveBeenCalled();
     expect(await db.providerShows.count()).toBe(0);
     expect(await db.episodes.count()).toBe(0);
-    expect(await db.stagedImports.count()).toBe(0);
 
     const retried = await analyzeImport({ selected: selected(), provider, settings, now });
     expect(retried.report.providerErrors).toHaveLength(0);

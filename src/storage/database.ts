@@ -2,13 +2,11 @@ import Dexie, { type EntityTable } from "dexie";
 import type { ProviderEpisode, ProviderShow } from "../domain/models";
 
 export interface CacheEntry { key: string; value: unknown; expiresAt: number }
-export interface StagedImport { id: string; phase: string; payload: unknown; stagedAt: string }
 
 class TrackerDatabase extends Dexie {
   providerShows!: EntityTable<ProviderShow, "id">;
   episodes!: EntityTable<ProviderEpisode, "id">;
   cache!: EntityTable<CacheEntry, "key">;
-  stagedImports!: EntityTable<StagedImport, "id">;
 
   constructor() {
     super("imdbShowsTracker");
@@ -18,6 +16,7 @@ class TrackerDatabase extends Dexie {
       cache: "key, expiresAt",
       stagedImports: "id, phase, stagedAt",
     });
+    this.version(2).stores({ stagedImports: null });
   }
 }
 
@@ -30,8 +29,7 @@ export async function resetMetadataCache() {
 }
 
 export async function clearTrackerDatabase() {
-  await db.transaction("rw", db.providerShows, db.episodes, db.cache, db.stagedImports, async () => {
-    await db.stagedImports.clear();
+  await db.transaction("rw", db.providerShows, db.episodes, db.cache, async () => {
     await db.episodes.clear();
     await db.providerShows.clear();
     await db.cache.clear();

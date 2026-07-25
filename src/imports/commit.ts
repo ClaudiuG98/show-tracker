@@ -5,7 +5,7 @@ import type { ImportDecisions, ImportPreview, ImportShowPlan } from "./preview";
 import type { ImportedEpisodeState } from "./reconcile";
 import type { ImportAnalysis } from "./session";
 
-export class ImportCommitError extends Error {
+class ImportCommitError extends Error {
   readonly code = "commit_failed";
   constructor(message = "Commit failed. Existing tracker state was not changed.", options?: ErrorOptions) {
     super(message, options);
@@ -101,6 +101,7 @@ export async function commitImport(
             titleSnapshot: plan.title,
             ...(plan.imdbAddedAt ? { imdbAddedAt: plan.imdbAddedAt } : {}),
             ...(plan.tvTimeAddedAt ? { tvTimeAddedAt: plan.tvTimeAddedAt } : {}),
+            ...(plan.tvTimeRating !== undefined ? { tvTimeRating: plan.tvTimeRating } : {}),
             userState: plan.desiredState,
             userStateSource: "import",
             userStateUpdatedAt: now,
@@ -122,6 +123,7 @@ export async function commitImport(
             titleSnapshot: plan.title,
             ...(plan.imdbAddedAt ? { imdbAddedAt: plan.imdbAddedAt } : {}),
             ...(plan.tvTimeAddedAt ? { tvTimeAddedAt: plan.tvTimeAddedAt } : {}),
+            ...(plan.tvTimeRating !== undefined ? { tvTimeRating: plan.tvTimeRating } : {}),
             userState: existingStateIsProtected ? existingTracked.userState : plan.desiredState,
             ...(nextStateSource ? { userStateSource: nextStateSource } : {}),
             ...(nextStateUpdatedAt ? { userStateUpdatedAt: nextStateUpdatedAt } : {}),

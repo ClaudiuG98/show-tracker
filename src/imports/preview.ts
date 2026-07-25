@@ -14,7 +14,7 @@ import {
 import type { ImportedEpisodeState } from "./reconcile";
 import type { ImportAnalysis, ImportShowRecord } from "./session";
 
-export type FinishedListMode = "watched_everything" | "mixture";
+type FinishedListMode = "watched_everything" | "mixture";
 
 export interface ImportDecisions {
   includeTvTimeOnlyRecordIds: string[];
@@ -45,13 +45,14 @@ export interface ImportShowPlan {
   imdbId?: string;
   imdbAddedAt?: string;
   tvTimeAddedAt?: string;
+  tvTimeRating?: number;
   tvtimeShowId?: string;
   desiredState: UserShowState;
   progress: ImportedEpisodeState[];
   sources: Array<"imdb" | "tvtime">;
 }
 
-export interface LocalProgressConflict {
+interface LocalProgressConflict {
   key: string;
   recordId: string;
   showName: string;
@@ -61,7 +62,7 @@ export interface LocalProgressConflict {
   replaceApproved: boolean;
 }
 
-export interface LocalShowStateConflict {
+interface LocalShowStateConflict {
   key: string;
   recordId: string;
   showName: string;
@@ -111,8 +112,8 @@ function toAssumptionProgress(decision: OnboardingDecision, importedAt: string):
 function tvTimeState(record: ImportShowRecord, analysis: ImportAnalysis, local: LocalState): UserShowState {
   const tvtime = record.tvtime!;
   if (tvtime.status === "stopped") return "paused";
-  if (tvtime.status === "not_started_yet") return "not_started";
   const watched = new Set(record.progress?.states.filter((state) => state.watched).map((state) => state.tvmazeEpisodeId));
+  if (tvtime.status === "not_started_yet" && watched.size === 0) return "not_started";
   const hasAvailableUnwatched = record.episodes.some((episode) => episode.kind === "regular"
     && !watched.has(episode.id)
     && getEpisodeAvailability(episode, new Date(analysis.importedAt), local.settings.timezone, local.settings.dateOnlyReleaseHour) === "available");
@@ -136,6 +137,7 @@ function createPlan(
     ...(record.imdb?.imdbId ? { imdbId: record.imdb.imdbId } : {}),
     ...(record.imdb?.created ? { imdbAddedAt: record.imdb.created } : {}),
     ...(record.tvtime?.createdAt ? { tvTimeAddedAt: record.tvtime.createdAt } : {}),
+    ...(record.tvtime?.rating !== undefined ? { tvTimeRating: record.tvtime.rating } : {}),
     ...(record.tvtime?.uuid ? { tvtimeShowId: record.tvtime.uuid } : {}),
     desiredState,
     progress,
@@ -167,6 +169,9 @@ export function buildImportPreview(
   local: LocalState,
 ): ImportPreview {
   const missingDecisions: string[] = analysis.report.providerErrors.map((error) => `${error.recordName}: ${error.message}`);
+  if (analysis.report.unresolvedEpisodes > 0 && !decisions.unresolvedReviewed) {
+    missingDecisions.push(`Review ${analysis.report.unresolvedEpisodes} unresolved TV Time episode record${analysis.report.unresolvedEpisodes === 1 ? "" : "s"}.`);
+  }
   const plans: ImportShowPlan[] = [];
   const onboardingTiming = timing(analysis, local);
   const imdbOnly = analysis.records.filter((record) => record.kind === "imdb_only" && record.provider);

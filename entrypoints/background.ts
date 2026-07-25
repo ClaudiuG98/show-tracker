@@ -5,7 +5,7 @@ import { TvMazeProvider } from "../src/providers/tvmaze/provider";
 import { DAILY_SYNC_ALARM, RELEASE_ALARM, ensureSyncAlarms, recomputeBadgeAndReleaseAlarm, synchronize } from "../src/scheduling/sync";
 import { selectWatchListShows } from "../src/domain/selectors";
 
-const dashboardUrl = (route = "/watch-list") => chrome.runtime.getURL(`/dashboard.html#${route}`);
+const dashboardUrl = (route = "/") => chrome.runtime.getURL(`/dashboard.html#${route}`);
 
 export default defineBackground(() => {
   void ensureSyncAlarms();

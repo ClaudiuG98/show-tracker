@@ -23,5 +23,3 @@ export const tvMazeAlternateEpisodeSchema = z.object({
   season: z.number().int().nonnegative(), number: z.number().int().positive(), name: z.string().nullable().optional(),
   _embedded: z.object({ episodes: z.array(z.object({ id: z.number().int().positive() })) }).optional(),
 });
-export type TvMazeShowDto = z.infer<typeof tvMazeShowSchema>;
-export type TvMazeEpisodeDto = z.infer<typeof tvMazeEpisodeSchema>;

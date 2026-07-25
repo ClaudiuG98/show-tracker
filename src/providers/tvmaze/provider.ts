@@ -3,7 +3,7 @@ import { db, type CacheEntry } from "../../storage/database";
 import { tvMazeRequest, type TvMazeRequest } from "./client";
 import { tvMazeAlternateEpisodeSchema, tvMazeAlternateListSchema, tvMazeEpisodeSchema, tvMazeShowSchema } from "./schemas";
 
-export const TVMAZE_CACHE_TTL = {
+const TVMAZE_CACHE_TTL = {
   exactLookupMs: 7 * 24 * 60 * 60 * 1_000,
   episodesMs: 6 * 60 * 60 * 1_000,
 } as const;

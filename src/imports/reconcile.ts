@@ -3,9 +3,9 @@ import type { ProviderAlternateEpisodeMapping, ProviderEpisode, ProviderShow, Se
 import type { ImdbImportRow } from "./imdb";
 import type { TvTimeShow } from "./tvtime";
 
-export type ShowMatchKind = "matched" | "imdb_only" | "tvtime_only" | "conflict" | "unmatched";
+type ShowMatchKind = "matched" | "imdb_only" | "tvtime_only" | "conflict" | "unmatched";
 
-export interface ShowMatchConflict {
+interface ShowMatchConflict {
   reason: string;
   imdbProvider?: ProviderShow;
   tvtimeProvider?: ProviderShow;
@@ -200,13 +200,4 @@ export function mapTvTimeProgressDetailed(
     return { ...base, watched, ...(watched && watchedAt ? { watchedAt } : {}), rewatchCount: Math.max(...group.map((state) => state.rewatchCount ?? 0)) };
   });
   return { states: mergedStates, watchedMapped, explicitUnwatchedMapped, futureUnwatchedExcluded, specialsExcluded, unresolved, numberingConflicts };
-}
-
-/** Backwards-compatible convenience wrapper for callers that need localized states. */
-export function mapTvTimeProgress(
-  localShowId: string,
-  tvtime: TvTimeShow,
-  providerEpisodes: ProviderEpisode[],
-): WatchedEpisodeState[] {
-  return mapTvTimeProgressDetailed(tvtime, providerEpisodes).states.map((state) => ({ localShowId, ...state }));
 }

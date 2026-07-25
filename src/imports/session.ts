@@ -31,23 +31,19 @@ export interface ImportStageProgress {
   message: string;
 }
 
-export interface ImportSourceCounts {
+interface ImportSourceCounts {
   imdbRowsParsed: number;
   tvTimeShowsParsed: number;
   tvTimeEpisodesParsed: number;
-  imdbRowsSelected: number;
-  tvTimeShowsSelected: number;
-  tvTimeEpisodesSelected: number;
 }
 
 export interface SelectedImportSources {
   imdbRows: ImdbImportRow[];
   tvTimeShows: TvTimeShow[];
   counts: ImportSourceCounts;
-  fixtureSubsetMode: boolean;
 }
 
-export type ImportProviderErrorCode =
+type ImportProviderErrorCode =
   | "imdb_lookup_failed"
   | "tvdb_lookup_failed"
   | "rate_limit"
@@ -67,10 +63,9 @@ export interface ImportShowRecord extends ShowMatch {
   progress?: TvTimeProgressMapping;
 }
 
-export interface ImportReport {
+interface ImportReport {
   imdbRowsParsed: number;
   tvTimeShowsParsed: number;
-  showsSelectedByFixture: number;
   exactImdbMatches: number;
   exactTvdbMatches: number;
   successfullyMerged: number;
@@ -97,7 +92,6 @@ export interface ImportReport {
 export interface ImportAnalysis {
   sessionId: string;
   importedAt: string;
-  fixtureSubsetMode: boolean;
   counts: ImportSourceCounts;
   records: ImportShowRecord[];
   providerShows: ProviderShow[];
@@ -122,14 +116,10 @@ export function selectFullImportSources(
   return {
     imdbRows,
     tvTimeShows,
-    fixtureSubsetMode: false,
     counts: {
       imdbRowsParsed: imdb?.totalRows ?? 0,
       tvTimeShowsParsed: tvTimeShows.length,
       tvTimeEpisodesParsed: tvTimeShows.reduce((total, show) => total + show.episodes.length, 0),
-      imdbRowsSelected: imdbRows.length,
-      tvTimeShowsSelected: tvTimeShows.length,
-      tvTimeEpisodesSelected: tvTimeShows.reduce((total, show) => total + show.episodes.length, 0),
     },
   };
 }
@@ -273,7 +263,6 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
   const report: ImportReport = {
     imdbRowsParsed: selected.counts.imdbRowsParsed,
     tvTimeShowsParsed: selected.counts.tvTimeShowsParsed,
-    showsSelectedByFixture: selected.fixtureSubsetMode ? Math.max(selected.counts.imdbRowsSelected, selected.counts.tvTimeShowsSelected) : 0,
     exactImdbMatches: new Set([
       ...[...imdbResults].flatMap(([id, show]) => show ? [id] : []),
       ...[...tvtimeImdbResults].flatMap(([id, show]) => show ? [id] : []),
@@ -302,7 +291,6 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
   return {
     sessionId: crypto.randomUUID(),
     importedAt: now.toISOString(),
-    fixtureSubsetMode: selected.fixtureSubsetMode,
     counts: selected.counts,
     records,
     providerShows: [...providers.values()],
