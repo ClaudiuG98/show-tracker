@@ -125,7 +125,7 @@ export function useTracker() {
       const result = await chrome.runtime.sendMessage({ type: "SYNC_NOW" }) as { ok?: boolean; error?: string } | undefined;
       if (!result?.ok) throw new Error(result?.error ?? "TVMaze metadata could not be refreshed.");
       await reload();
-      setStatus(redownload ? "Metadata rebuilt." : "Metadata refreshed.");
+      setStatus(redownload ? "Metadata rebuilt." : "Updates checked.");
     } catch (cause) {
       setMetadataError(cause instanceof Error ? cause.message : "TVMaze metadata could not be refreshed.");
       throw cause;

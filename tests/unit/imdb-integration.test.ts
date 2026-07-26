@@ -16,6 +16,8 @@ describe("IMDb integration", () => {
     await Promise.all([first, synchronizeImdbControls(document, "/title/tt123/", send)]);
     expect(document.querySelectorAll(`#${GLOBAL_HOST_ID}`)).toHaveLength(1); expect(document.querySelectorAll(`#${TITLE_HOST_ID}`)).toHaveLength(1);
     expect(shadowButton(GLOBAL_HOST_ID)).toHaveTextContent("4"); expect(document.getElementById(GLOBAL_HOST_ID)).not.toHaveAttribute("data-fallback");
+    expect(shadowButton(GLOBAL_HOST_ID)?.querySelector("img")).toHaveAttribute("src", expect.stringContaining("/icons/icon-32.png"));
+    expect(shadowButton(TITLE_HOST_ID)?.querySelector("img")).toHaveAttribute("src", expect.stringContaining("/icons/imdb-mark-32.png"));
   });
 
   it("suppresses show controls for movies and episodes", async () => {

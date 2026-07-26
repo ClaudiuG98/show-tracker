@@ -1,4 +1,4 @@
-# IMDb Shows Tracker
+# TV Show Tracker for IMDb – TV Time Import
 
 A local-first Manifest V3 TV episode tracker for Chrome and Edge. It imports IMDb TV lists and TV Time history, resolves metadata through TVMaze, and keeps viewing progress in browser storage.
 

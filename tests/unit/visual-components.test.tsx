@@ -163,11 +163,35 @@ describe("route-independent operation status", () => {
   it("renders the parent refresh operation when Settings remounts", () => {
     const current = tracker({ metadataAction: "refresh" });
     const first = render(<MemoryRouter><SettingsPage tracker={current}/></MemoryRouter>);
-    expect(screen.getByRole("button", { name: "Checking 1 shows…" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Checking for updates…" })).toHaveAttribute("aria-busy", "true");
     first.unmount();
 
     render(<MemoryRouter><SettingsPage tracker={current}/></MemoryRouter>);
-    expect(screen.getByRole("button", { name: "Checking 1 shows…" })).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Checking for updates…" })).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("explains automatic updates and keeps the full download under confirmed troubleshooting", async () => {
+    const refreshMetadata = vi.fn(async () => undefined);
+    const current = tracker({
+      refreshMetadata,
+      local: { ...tracker().local!, lastSyncAt: "2026-07-26T13:56:00.000Z" },
+    });
+    render(<MemoryRouter><SettingsPage tracker={current}/></MemoryRouter>);
+
+    expect(screen.queryByLabelText("Date-only release hour")).not.toBeInTheDocument();
+    expect(screen.getByText(/checked automatically once a day/i)).toBeVisible();
+    expect(screen.getByText("Jul 26, 2026 · 1:56 PM")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Check for updates" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Re-download all metadata" })).not.toBeVisible();
+
+    fireEvent.click(screen.getByText("Troubleshooting"));
+    const redownload = screen.getByRole("button", { name: "Re-download all metadata" });
+    vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    fireEvent.click(redownload);
+    expect(refreshMetadata).not.toHaveBeenCalled();
+    await waitFor(() => expect(redownload).not.toHaveAttribute("aria-busy", "true"));
+    fireEvent.click(redownload);
+    await waitFor(() => expect(refreshMetadata).toHaveBeenCalledWith(true));
   });
 
   it("lets the user review any unresolved episodes that remain", () => {

@@ -4,7 +4,12 @@ export const TITLE_HOST_ID = "tv-tracker-title-control";
 type TrackerResponse = { ok?: boolean; tracked?: boolean; showId?: string; count?: number; error?: string };
 type SendMessage = (message: Record<string, unknown>) => Promise<TrackerResponse>;
 
-const STYLE = `:host{all:initial;display:inline-flex;margin:0 6px;vertical-align:middle}:host([data-kind="title"]:not([data-fallback])){display:flex;width:100%;margin:8px 0 0}:host([data-kind="title"]:not([data-fallback])) .title{width:100%;justify-content:center}button{display:inline-flex;align-items:center;min-height:40px;border:1px solid #777;border-radius:20px;padding:0 15px;background:#252525;color:#fff;font:700 14px Arial,sans-serif;cursor:pointer;white-space:nowrap}button:hover{border-color:#f5c518}button:focus-visible{outline:3px solid #8fc7ff;outline-offset:2px}button.loading{cursor:wait}.title{background:#f5c518;color:#111;border-color:#f5c518}.mark{display:inline-grid;place-items:center;width:19px;height:19px;margin-right:7px;border-radius:5px;background:#f5c518;color:#111;font-weight:900}.title .mark{background:#111;color:#f5c518}.loading .mark{width:15px;height:15px;border:2px solid #1115;border-top-color:#111;border-radius:50%;background:transparent;animation:tracker-spin .7s linear infinite}.count{display:inline-grid;place-items:center;min-width:21px;height:21px;margin-left:8px;padding:0 4px;border-radius:11px;background:#f5c518;color:#111;font-size:12px}.title .count{display:none}:host([data-fallback]){position:fixed;right:18px;bottom:18px;z-index:2147483646}:host([data-fallback][data-kind="title"]){bottom:68px}@keyframes tracker-spin{to{transform:rotate(1turn)}}@media(prefers-reduced-motion:reduce){*{transition:none!important}.loading .mark{animation-duration:1.5s}}`;
+const STYLE = `:host{all:initial;display:inline-flex;margin:0 6px;vertical-align:middle}:host([data-kind="title"]:not([data-fallback])){display:flex;width:100%;margin:8px 0 0}:host([data-kind="title"]:not([data-fallback])) .title{width:100%;justify-content:center}button{display:inline-flex;align-items:center;min-height:40px;border:1px solid #777;border-radius:20px;padding:0 15px;background:#252525;color:#fff;font:700 14px Arial,sans-serif;cursor:pointer;white-space:nowrap}button:hover{border-color:#f5c518}button:focus-visible{outline:3px solid #8fc7ff;outline-offset:2px}button.loading{cursor:wait}.title{background:#f5c518;color:#111;border-color:#f5c518}.mark{display:block;width:24px;height:24px;flex:0 0 24px;margin-right:7px;object-fit:contain}.loading .mark{width:15px;height:15px;flex-basis:15px;border:2px solid #1115;border-top-color:#111;border-radius:50%;animation:tracker-spin .7s linear infinite}.count{display:inline-grid;place-items:center;min-width:21px;height:21px;margin-left:8px;padding:0 4px;border-radius:11px;background:#f5c518;color:#111;font-size:12px}.title .count{display:none}:host([data-fallback]){position:fixed;right:18px;bottom:18px;z-index:2147483646}:host([data-fallback][data-kind="title"]){bottom:68px}@keyframes tracker-spin{to{transform:rotate(1turn)}}@media(prefers-reduced-motion:reduce){*{transition:none!important}.loading .mark{animation-duration:1.5s}}`;
+
+const iconUrl = (kind: "global" | "title") => {
+  const path = kind === "title" ? "icons/imdb-mark-32.png" : "icons/icon-32.png";
+  return typeof chrome !== "undefined" && chrome.runtime?.getURL ? chrome.runtime.getURL(path) : `/${path}`;
+};
 
 const imdbIdFromPath = (pathname: string) => pathname.match(/^\/title\/(tt\d+)/)?.[1];
 
@@ -43,7 +48,9 @@ function renderButton(host: HTMLElement, label: string, kind: "global" | "title"
   const shadow = host.shadowRoot!; shadow.replaceChildren();
   const style = document.createElement("style"); style.textContent = STYLE;
   const control = document.createElement("button"); control.type = "button"; control.className = `${kind}${loading ? " loading" : ""}`; control.setAttribute("aria-label", label); control.disabled = loading; control.setAttribute("aria-busy", String(loading));
-  const mark = document.createElement("span"); mark.className = "mark"; mark.setAttribute("aria-hidden", "true"); mark.textContent = loading ? "" : "T";
+  const mark = loading ? document.createElement("span") : document.createElement("img");
+  mark.className = "mark"; mark.setAttribute("aria-hidden", "true");
+  if (mark instanceof HTMLImageElement) { mark.src = iconUrl(kind); mark.alt = ""; }
   const text = document.createElement("span"); text.textContent = label; control.append(mark, text);
   if (kind === "global") { const badge = document.createElement("span"); badge.className = "count"; badge.textContent = String(count ?? 0); badge.setAttribute("aria-label", `${count ?? 0} shows waiting`); control.append(badge); }
   control.addEventListener("click", onClick); shadow.append(style, control); return control;
