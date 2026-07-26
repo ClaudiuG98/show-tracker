@@ -240,7 +240,7 @@ describe("show seasons", () => {
     expect(screen.getByRole("heading", { name: "Holston's Pick", level: 1 })).toBeVisible();
     expect(screen.getByText("Holston explains what happened outside the silo.")).toBeVisible();
     expect(screen.getByText("8.7 / 10")).toBeVisible();
-    expect(screen.getByText("Monday, January 8th, 2024")).toBeVisible();
+    expect(screen.getByText("Monday, Jan 8th, 2024")).toBeVisible();
     expect(screen.queryByText(/8:00 PM/)).not.toBeInTheDocument();
     expect(screen.getByRole("img", { name: "Holston's Pick episode still" })).toHaveAttribute("src", "https://static.tvmaze.com/episode.jpg");
     expect(screen.getByRole("link", { name: /Previous episode S01 · E01 Freedom Day/ })).toHaveAttribute("href", "#/show/local-1/episode/1");

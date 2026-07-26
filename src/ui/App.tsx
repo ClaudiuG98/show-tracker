@@ -313,7 +313,7 @@ export function EpisodeDetail({ tracker }: { tracker: Tracker }) {
       <div className="episode-detail-copy"><p className="eyebrow"><a href={`#/show/${show.id}`}>{show.titleSnapshot}</a></p><div className="episode-detail-code">{episodeCode(episode)}</div><h1>{episode.name ?? "Untitled episode"}</h1>
         <div className="badges"><span className={`badge ${watched ? "accent" : ""}`}>{watched ? "Watched" : "Not watched"}</span><span className={`availability ${availability}`}>{availability}</span>{episode.kind === "special" && <span className="badge">Special</span>}</div>
         <dl className="episode-facts" aria-label="Episode information">
-          {release && <div><dt>Released</dt><dd><time dateTime={release.toISOString()}>{formatInTimeZone(release, timezone, "PPPP")}</time></dd></div>}
+          {release && <div><dt>Released</dt><dd><time dateTime={release.toISOString()}>{formatInTimeZone(release, timezone, "EEEE, MMM do, yyyy")}</time></dd></div>}
           {!release && <div><dt>Released</dt><dd>Unknown</dd></div>}
           {episode.runtimeMinutes != null && <div><dt>Runtime</dt><dd>{episode.runtimeMinutes} min</dd></div>}
           {episode.rating != null && <div><dt>TVMaze score</dt><dd><span aria-hidden="true">★</span> {episode.rating.toFixed(1)} / 10</dd></div>}
