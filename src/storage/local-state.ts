@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { DEFAULT_SETTINGS, type Settings, type TrackedShow, type WatchedAction, type WatchedEpisodeState } from "../domain/models";
 
-const KEY = "trackerState";
+export const LOCAL_STATE_KEY = "trackerState";
 const LOCAL_SCHEMA_VERSION = 1;
 
 export interface LocalState {
@@ -11,6 +11,7 @@ export interface LocalState {
   history: WatchedAction[];
   settings: Settings;
   lastSyncAt?: string;
+  lastSyncFailure?: { failedAt: string; message: string; retryAt?: string; attempt: number };
   importCommit?: { sessionId: string; marker: "prepared" | "local_committed" | "complete" };
 }
 
@@ -28,6 +29,7 @@ const historySchema = z.object({ id: z.string(), showId: z.string(), episodeKeys
   action: z.enum(["watched", "unwatched", "bulk_watched", "bulk_unwatched", "state_changed"]), before: snapshotSchema, after: snapshotSchema, occurredAt: z.string() });
 export const localStateSchema = z.object({ schemaVersion: z.number().int().positive(), shows: z.array(showSchema), progress: z.array(progressSchema), history: z.array(historySchema),
   settings: z.object({ dateOnlyReleaseHour: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), timezone: z.string().min(1) }), lastSyncAt: z.string().optional(),
+  lastSyncFailure: z.object({ failedAt: z.string().datetime(), message: z.string().min(1), retryAt: z.string().datetime().optional(), attempt: z.number().int().positive() }).optional(),
   importCommit: z.object({ sessionId: z.string(), marker: z.enum(["prepared", "local_committed", "complete"]) }).optional() });
 export const emptyLocalState = (): LocalState => ({
   schemaVersion: LOCAL_SCHEMA_VERSION, shows: [], progress: [], history: [], settings: DEFAULT_SETTINGS,
@@ -46,7 +48,7 @@ async function serializedWrite<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 export async function readLocalState(): Promise<LocalState> {
-  const value = (await chrome.storage.local.get(KEY))[KEY];
+  const value = (await chrome.storage.local.get(LOCAL_STATE_KEY))[LOCAL_STATE_KEY];
   if (!value) return emptyLocalState();
   const parsed = localStateSchema.parse(value);
   if (parsed.schemaVersion > LOCAL_SCHEMA_VERSION) throw new Error("Tracker data was created by a newer extension version.");
@@ -58,7 +60,7 @@ function migrateLocalState(value: LocalState): LocalState {
 }
 
 async function writeLocalStateUnlocked(value: LocalState) {
-  await chrome.storage.local.set({ [KEY]: { ...value, schemaVersion: LOCAL_SCHEMA_VERSION, history: value.history.slice(0, 500) } });
+  await chrome.storage.local.set({ [LOCAL_STATE_KEY]: { ...value, schemaVersion: LOCAL_SCHEMA_VERSION, history: value.history.slice(0, 500) } });
 }
 
 export async function writeLocalState(value: LocalState) {

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { strToU8, zipSync } from "fflate";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DomainState } from "../../src/domain/selectors";
 import { EpisodeDetail, Library, SettingsPage, ShowDetail, Upcoming, WatchList } from "../../src/ui/App";
@@ -181,6 +181,7 @@ describe("route-independent operation status", () => {
     expect(screen.queryByLabelText("Date-only release hour")).not.toBeInTheDocument();
     expect(screen.getByText(/checked automatically once a day/i)).toBeVisible();
     expect(screen.getByText("Jul 26, 2026 · 1:56 PM")).toBeVisible();
+    expect(screen.getByText("Up to date")).toBeVisible();
     expect(screen.getByRole("button", { name: "Check for updates" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Re-download all metadata" })).not.toBeVisible();
 
@@ -192,6 +193,28 @@ describe("route-independent operation status", () => {
     await waitFor(() => expect(redownload).not.toHaveAttribute("aria-busy", "true"));
     fireEvent.click(redownload);
     await waitFor(() => expect(refreshMetadata).toHaveBeenCalledWith(true));
+  });
+
+  it("shows a persisted automatic-update failure and its retry time", () => {
+    const current = tracker({
+      local: {
+        ...tracker().local!,
+        lastSyncAt: "2026-07-25T13:00:00.000Z",
+        lastSyncFailure: {
+          failedAt: "2026-07-26T13:00:00.000Z",
+          message: "TVMaze could not be reached. Check your internet connection.",
+          retryAt: "2026-07-26T13:30:00.000Z",
+          attempt: 1,
+        },
+      },
+    });
+
+    render(<MemoryRouter><SettingsPage tracker={current}/></MemoryRouter>);
+
+    expect(screen.getByText("Needs retry")).toBeVisible();
+    expect(screen.getByText(/Automatic update failed/)).toBeVisible();
+    expect(screen.getByText(/TVMaze could not be reached/)).toBeVisible();
+    expect(screen.getByText(/The extension will retry/)).toBeVisible();
   });
 
   it("lets the user review any unresolved episodes that remain", () => {

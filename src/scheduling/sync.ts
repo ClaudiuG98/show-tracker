@@ -7,7 +7,9 @@ import type { TelevisionProvider } from "../domain/models";
 
 const provider = new TvMazeProvider();
 export const DAILY_SYNC_ALARM = "daily-metadata-sync";
+export const METADATA_RETRY_ALARM = "metadata-sync-retry";
 export const RELEASE_ALARM = "next-episode-release";
+const RETRY_DELAYS_MINUTES = [30, 2 * 60, 6 * 60] as const;
 let synchronization: Promise<void> | undefined;
 
 function windowFor(last?: string): "day" | "week" | "month" | "all" {
@@ -34,10 +36,15 @@ async function runSynchronization(syncProvider: TelevisionProvider) {
       await db.episodes.bulkPut(episodes);
     });
   }
-  await updateLocalState((value) => ({ ...value, lastSyncAt: new Date().toISOString(), shows: value.shows.map((show) => {
-    const updated = show.externalIds.tvmazeShow ? changed.get(show.externalIds.tvmazeShow) : undefined;
-    return updated ? { ...show, providerUpdatedAt: updated, updatedAt: new Date().toISOString() } : show;
-  }) }));
+  await updateLocalState((value) => {
+    const { lastSyncFailure: _lastSyncFailure, ...current } = value;
+    const checkedAt = new Date().toISOString();
+    return { ...current, lastSyncAt: checkedAt, shows: value.shows.map((show) => {
+      const updated = show.externalIds.tvmazeShow ? changed.get(show.externalIds.tvmazeShow) : undefined;
+      return updated ? { ...show, providerUpdatedAt: updated, updatedAt: checkedAt } : show;
+    }) };
+  });
+  await chrome.alarms.clear(METADATA_RETRY_ALARM);
   await recomputeBadgeAndReleaseAlarm();
 }
 
@@ -47,14 +54,55 @@ export function synchronize(syncProvider: TelevisionProvider = provider) {
   return synchronization;
 }
 
+function readableSyncError(cause: unknown) {
+  const message = cause instanceof Error ? cause.message : "";
+  if (!message || /failed to fetch|networkerror|network request failed/i.test(message)) {
+    return "TVMaze could not be reached. Check your internet connection.";
+  }
+  return message.slice(0, 240);
+}
+
+export async function runAutomaticSynchronization(trigger: "daily" | "retry", syncProvider: TelevisionProvider = provider) {
+  try {
+    await synchronize(syncProvider);
+    return true;
+  } catch (cause) {
+    const failedAt = new Date();
+    let retryAt: Date | undefined;
+    await updateLocalState((state) => {
+      const attempt = trigger === "daily" ? 1 : (state.lastSyncFailure?.attempt ?? 0) + 1;
+      const delay = RETRY_DELAYS_MINUTES[attempt - 1];
+      retryAt = delay === undefined ? undefined : new Date(failedAt.getTime() + delay * 60_000);
+      return { ...state, lastSyncFailure: {
+        failedAt: failedAt.toISOString(),
+        message: readableSyncError(cause),
+        ...(retryAt ? { retryAt: retryAt.toISOString() } : {}),
+        attempt,
+      } };
+    });
+    if (retryAt) await chrome.alarms.create(METADATA_RETRY_ALARM, { when: retryAt.getTime() });
+    else await chrome.alarms.clear(METADATA_RETRY_ALARM);
+    return false;
+  }
+}
+
 export async function ensureDailySyncAlarm() {
   if (!await chrome.alarms.get(DAILY_SYNC_ALARM)) {
     await chrome.alarms.create(DAILY_SYNC_ALARM, { delayInMinutes: 1, periodInMinutes: 24 * 60 });
   }
 }
 
+export async function ensureMetadataRetryAlarm() {
+  const failure = (await readLocalState()).lastSyncFailure;
+  if (!failure?.retryAt || await chrome.alarms.get(METADATA_RETRY_ALARM)) return;
+  const retryAt = new Date(failure.retryAt).getTime();
+  if (!Number.isFinite(retryAt)) return;
+  await chrome.alarms.create(METADATA_RETRY_ALARM, { when: Math.max(retryAt, Date.now() + 60_000) });
+}
+
 export async function ensureSyncAlarms() {
   await ensureDailySyncAlarm();
+  await ensureMetadataRetryAlarm();
   await recomputeBadgeAndReleaseAlarm();
 }
 

@@ -1,17 +1,29 @@
 import { requestSchema } from "../src/messaging/messages";
-import { readLocalState, updateLocalState } from "../src/storage/local-state";
+import { LOCAL_STATE_KEY, readLocalState, updateLocalState } from "../src/storage/local-state";
 import { db } from "../src/storage/database";
 import { TvMazeProvider } from "../src/providers/tvmaze/provider";
-import { DAILY_SYNC_ALARM, RELEASE_ALARM, ensureSyncAlarms, recomputeBadgeAndReleaseAlarm, synchronize } from "../src/scheduling/sync";
+import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, RELEASE_ALARM, ensureSyncAlarms, recomputeBadgeAndReleaseAlarm, runAutomaticSynchronization, synchronize } from "../src/scheduling/sync";
 import { selectWatchListShows } from "../src/domain/selectors";
 
 const dashboardUrl = (route = "/") => chrome.runtime.getURL(`/dashboard.html#${route}`);
 
 export default defineBackground(() => {
-  void ensureSyncAlarms();
-  chrome.runtime.onInstalled.addListener(() => void ensureSyncAlarms());
+  const safely = (label: string, operation: Promise<unknown>) => void operation.catch((error: unknown) => {
+    console.warn(`[TV Show Tracker] ${label}`, error);
+  });
+  chrome.runtime.onInstalled.addListener(() => safely("Could not initialize background alarms after installation.", ensureSyncAlarms()));
+  chrome.runtime.onStartup.addListener(() => safely("Could not restore the badge after browser startup.", ensureSyncAlarms()));
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local" && changes[LOCAL_STATE_KEY]) {
+      safely("Could not update the badge after tracker data changed.", recomputeBadgeAndReleaseAlarm());
+    }
+  });
   chrome.action.onClicked.addListener(() => void chrome.tabs.create({ url: dashboardUrl() }));
-  chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === DAILY_SYNC_ALARM) void synchronize(); else if (alarm.name === RELEASE_ALARM) void recomputeBadgeAndReleaseAlarm(); });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === DAILY_SYNC_ALARM) safely("Automatic metadata check failed.", runAutomaticSynchronization("daily"));
+    else if (alarm.name === METADATA_RETRY_ALARM) safely("Automatic metadata retry failed.", runAutomaticSynchronization("retry"));
+    else if (alarm.name === RELEASE_ALARM) safely("Could not update the release badge.", recomputeBadgeAndReleaseAlarm());
+  });
   chrome.runtime.onMessage.addListener((raw, sender, respond) => {
     const parsed = requestSchema.safeParse(raw);
     if (!parsed.success) { respond({ ok: false, error: "Invalid request" }); return false; }

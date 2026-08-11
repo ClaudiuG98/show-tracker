@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderShow, TelevisionProvider } from "../../src/domain/models";
-import { DAILY_SYNC_ALARM, ensureDailySyncAlarm, shouldRefreshMetadata, synchronize } from "../../src/scheduling/sync";
+import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, ensureDailySyncAlarm, ensureMetadataRetryAlarm, runAutomaticSynchronization, shouldRefreshMetadata, synchronize } from "../../src/scheduling/sync";
 import { db } from "../../src/storage/database";
 import { emptyLocalState, type LocalState } from "../../src/storage/local-state";
 
@@ -65,6 +65,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -102,6 +103,20 @@ describe("metadata refresh selection", () => {
     expect(provider.getEpisodes).toHaveBeenCalledTimes(1);
     expect(provider.getEpisodes).toHaveBeenCalledWith(10);
   });
+
+  it("clears a previous automatic failure after a successful check", async () => {
+    stored.lastSyncFailure = {
+      failedAt: "2026-07-25T12:00:00.000Z",
+      message: "TVMaze could not be reached.",
+      retryAt: "2026-07-25T12:30:00.000Z",
+      attempt: 1,
+    };
+
+    await synchronize(fakeProvider(new Map()));
+
+    expect(stored.lastSyncFailure).toBeUndefined();
+    expect(chrome.alarms.clear).toHaveBeenCalledWith(METADATA_RETRY_ALARM);
+  });
 });
 
 describe("daily synchronization alarm", () => {
@@ -120,5 +135,60 @@ describe("daily synchronization alarm", () => {
       delayInMinutes: 1,
       periodInMinutes: 24 * 60,
     });
+  });
+
+  it("records an automatic failure and schedules a quiet retry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-26T12:00:00.000Z"));
+    const provider = fakeProvider(new Map());
+    vi.mocked(provider.getChangedShows).mockRejectedValue(new TypeError("Failed to fetch"));
+
+    await expect(runAutomaticSynchronization("daily", provider)).resolves.toBe(false);
+
+    expect(stored.lastSyncFailure).toEqual({
+      failedAt: "2026-07-26T12:00:00.000Z",
+      message: "TVMaze could not be reached. Check your internet connection.",
+      retryAt: "2026-07-26T12:30:00.000Z",
+      attempt: 1,
+    });
+    expect(chrome.alarms.create).toHaveBeenCalledWith(METADATA_RETRY_ALARM, {
+      when: new Date("2026-07-26T12:30:00.000Z").getTime(),
+    });
+  });
+
+  it("restores a persisted retry alarm after the background process restarts", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-26T12:00:00.000Z"));
+    stored.lastSyncFailure = {
+      failedAt: "2026-07-26T11:30:00.000Z",
+      message: "TVMaze could not be reached.",
+      retryAt: "2026-07-26T12:30:00.000Z",
+      attempt: 1,
+    };
+
+    await ensureMetadataRetryAlarm();
+
+    expect(chrome.alarms.create).toHaveBeenCalledWith(METADATA_RETRY_ALARM, {
+      when: new Date("2026-07-26T12:30:00.000Z").getTime(),
+    });
+  });
+
+  it("backs retries off and returns to the daily schedule after three attempts", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-26T12:00:00.000Z"));
+    const provider = fakeProvider(new Map());
+    vi.mocked(provider.getChangedShows).mockRejectedValue(new Error("TVMaze is unavailable."));
+    stored.lastSyncFailure = {
+      failedAt: "2026-07-26T11:00:00.000Z",
+      message: "TVMaze is unavailable.",
+      retryAt: "2026-07-26T12:00:00.000Z",
+      attempt: 3,
+    };
+
+    await expect(runAutomaticSynchronization("retry", provider)).resolves.toBe(false);
+
+    expect(stored.lastSyncFailure).toMatchObject({ message: "TVMaze is unavailable.", attempt: 4 });
+    expect(stored.lastSyncFailure?.retryAt).toBeUndefined();
+    expect(chrome.alarms.clear).toHaveBeenCalledWith(METADATA_RETRY_ALARM);
   });
 });
