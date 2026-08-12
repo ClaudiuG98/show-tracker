@@ -1,6 +1,7 @@
 import type { ProviderEpisode, ProviderShow, Settings, TelevisionProvider } from "../domain/models";
 import type { ImdbImportRow, ImdbParseResult } from "./imdb";
 import {
+  fillProgressCoverage,
   mapTvTimeProgressDetailed,
   reconcileShows,
   type EpisodeNumberingConflict,
@@ -61,6 +62,12 @@ export interface ImportProviderError {
 export interface ImportShowRecord extends ShowMatch {
   episodes: ProviderEpisode[];
   progress?: TvTimeProgressMapping;
+  backfilled?: number;
+}
+
+export interface BackfilledShow {
+  show: string;
+  count: number;
 }
 
 interface ImportReport {
@@ -79,6 +86,7 @@ interface ImportReport {
   futureEpisodesExcludedFromBacklog: number;
   specialsExcluded: number;
   unresolvedEpisodes: number;
+  episodesBackfilled: number;
   showsRequiringProgressSetup: number;
   providerNetworkErrors: number;
   conflictNames: string[];
@@ -86,6 +94,7 @@ interface ImportReport {
   tvTimeOnlyNames: string[];
   unresolvedEpisodeRecords: UnresolvedTvTimeEpisode[];
   numberingConflicts: EpisodeNumberingConflict[];
+  backfilledShows: BackfilledShow[];
   providerErrors: ImportProviderError[];
 }
 
@@ -259,6 +268,14 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
     }));
   }
 
+  // Runs last so the fill sees the best mapping available, including anything the alternate
+  // episode lists rescued above.
+  records = records.map((record) => {
+    if (!record.tvtime || !record.progress) return record;
+    const { states, backfilled } = fillProgressCoverage(record.tvtime, record.episodes, record.progress.states, { now, settings });
+    return backfilled === 0 ? record : { ...record, progress: { ...record.progress, states }, backfilled };
+  });
+
   const progressReports = records.flatMap((record) => record.progress ? [record.progress] : []);
   const report: ImportReport = {
     imdbRowsParsed: selected.counts.imdbRowsParsed,
@@ -279,6 +296,7 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
     futureEpisodesExcludedFromBacklog: progressReports.reduce((total, progress) => total + progress.futureUnwatchedExcluded, 0),
     specialsExcluded: progressReports.reduce((total, progress) => total + progress.specialsExcluded, 0),
     unresolvedEpisodes: progressReports.reduce((total, progress) => total + progress.unresolved.length, 0),
+    episodesBackfilled: records.reduce((total, record) => total + (record.backfilled ?? 0), 0),
     showsRequiringProgressSetup: records.filter((record) => record.kind === "imdb_only").length,
     providerNetworkErrors: errors.length,
     conflictNames: records.filter((record) => record.kind === "conflict").map((record) => record.imdb?.title ?? record.tvtime?.title ?? record.id),
@@ -286,6 +304,9 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
     tvTimeOnlyNames: records.filter((record) => record.kind === "tvtime_only").map((record) => record.tvtime?.title ?? record.provider?.name ?? record.id),
     unresolvedEpisodeRecords: progressReports.flatMap((progress) => progress.unresolved),
     numberingConflicts: progressReports.flatMap((progress) => progress.numberingConflicts),
+    backfilledShows: records.flatMap((record) => record.backfilled
+      ? [{ show: record.tvtime?.title ?? record.provider?.name ?? record.id, count: record.backfilled }]
+      : []).sort((a, b) => b.count - a.count),
     providerErrors: errors,
   };
   return {

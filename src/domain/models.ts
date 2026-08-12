@@ -17,6 +17,7 @@ export interface TrackedShow {
   imdbAddedAt?: string;
   tvTimeAddedAt?: string;
   tvTimeRating?: number;
+  imdbRating?: number;
   userState: UserShowState;
   userStateSource?: "import" | "user";
   userStateUpdatedAt?: string;
@@ -35,7 +36,7 @@ export interface WatchedEpisodeState {
   episode: number;
   watched: boolean;
   watchedAt?: string;
-  source: "tvtime" | "user" | "assumption" | "restore";
+  source: "tvtime" | "user" | "assumption" | "restore" | "backfill";
   rewatchCount?: number;
 }
 
@@ -60,6 +61,8 @@ export interface ProviderShow {
   showType?: string;
   networkName?: string;
   webChannelName?: string;
+  /** ISO country code of the network or web channel. Absent for global streamers. */
+  country?: string;
   /** True once the extended show-detail fields have been requested from TVMaze. */
   detailsLoaded?: boolean;
   metadataVersion?: number;
@@ -112,11 +115,13 @@ export interface WatchedAction {
 export interface Settings {
   dateOnlyReleaseHour: string;
   timezone: string;
+  notifications: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   dateOnlyReleaseHour: "09:00",
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  notifications: true,
 };
 
 export interface TelevisionProvider {

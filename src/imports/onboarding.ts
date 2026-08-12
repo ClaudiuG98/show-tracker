@@ -42,12 +42,12 @@ function compareEpisodes(a: ProviderEpisode, b: ProviderEpisode) {
   return a.season - b.season || a.number - b.number || a.id - b.id;
 }
 
-function regularEpisodes(show: OnboardingShow) {
+function regularEpisodes(show: Pick<OnboardingShow, "episodes">) {
   return show.episodes.filter((episode) => episode.kind === "regular");
 }
 
 export function getAvailableRegularEpisodes(
-  show: OnboardingShow,
+  show: Pick<OnboardingShow, "episodes">,
   timing: OnboardingTiming,
 ): ProviderEpisode[] {
   return regularEpisodes(show)

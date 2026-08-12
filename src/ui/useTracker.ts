@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getEpisodeAvailability } from "../domain/availability";
-import type { ActionSnapshot, TrackedShow, WatchedAction } from "../domain/models";
+import type { ActionSnapshot, ProviderEpisode, ProviderShow, TrackedShow, WatchedAction } from "../domain/models";
 import { db, resetMetadataCache } from "../storage/database";
 import { readLocalState, updateLocalState, type LocalState } from "../storage/local-state";
 import type { DomainState } from "../domain/selectors";
@@ -117,6 +117,20 @@ export function useTracker() {
     await reload();
     setStatus("Show removed from tracker.");
   };
+  const addShow = async (provider: ProviderShow, episodes: ProviderEpisode[]) => {
+    const existing = local?.shows.find((show) => show.externalIds.tvmazeShow === provider.id);
+    if (existing) return existing.id;
+    await db.transaction("rw", db.providerShows, db.episodes, async () => {
+      await db.providerShows.put(provider);
+      await db.episodes.bulkPut(episodes);
+    });
+    const now = new Date().toISOString(), id = crypto.randomUUID();
+    await updateLocalState((state) => ({ ...state, shows: [...state.shows, { id, externalIds: provider.externalIds, titleSnapshot: provider.name,
+      userState: "watching", userStateSource: "user", userStateUpdatedAt: now, importSources: ["manual"], providerUpdatedAt: provider.updatedAt, createdAt: now, updatedAt: now }] }));
+    await reload();
+    setStatus(`${provider.name} added to your tracker.`);
+    return id;
+  };
   const refreshMetadata = async (redownload = false) => {
     setMetadataAction(redownload ? "redownload" : "refresh");
     setMetadataError("");
@@ -133,5 +147,5 @@ export function useTracker() {
       setMetadataAction(undefined);
     }
   };
-  return { local, domain, error, status, now, metadataAction, metadataError, reload, refreshMetadata, markEpisode, markEpisodes, setEpisodesWatched, markCaughtUp, setShowState, removeShow, undo };
+  return { local, domain, error, status, now, metadataAction, metadataError, reload, refreshMetadata, markEpisode, markEpisodes, setEpisodesWatched, markCaughtUp, setShowState, removeShow, addShow, undo };
 }

@@ -20,56 +20,22 @@ import {
   type ImportAnalysis,
   type ImportProviderError,
   type ImportShowRecord,
-  type ImportStage,
-  type ImportStageProgress,
 } from "../../imports/session";
-import { parseTvTimeZip, TvTimeImportError, type TvTimeParseResult } from "../../imports/tvtime";
+import { parseRefractZip, resolveRefractShows, RefractImportError } from "../../imports/refract";
+import { parseTvTimeZip, TvTimeImportError } from "../../imports/tvtime";
 import { TvMazeProvider } from "../../providers/tvmaze/provider";
 import type { useTracker } from "../useTracker";
+import { useBackupRestore } from "../useBackupRestore";
 import { posterUrls } from "../../domain/view-models";
 import { Poster } from "../components/Poster";
+import { RestorePreview } from "../components/RestorePreview";
+import { SyncProgress } from "../components/SyncProgress";
 import { TvMazeAttribution } from "../components/Attribution";
 import { resetImportStore, useImportStore, type ImportPhase, type SelectedImportFile } from "./import-store";
 
 type Tracker = ReturnType<typeof useTracker>;
 type Phase = ImportPhase;
 const importProvider = new TvMazeProvider();
-
-const steps: Array<{ stage: ImportStage; label: string }> = [
-  { stage: "select_files", label: "Select files" },
-  { stage: "validate_parse", label: "Validate and parse" },
-  { stage: "analyze_sources", label: "Analyze sources" },
-  { stage: "resolve_ids", label: "Resolve show IDs" },
-  { stage: "download_episodes", label: "Download episode metadata" },
-  { stage: "reconcile", label: "Reconcile records" },
-  { stage: "report", label: "Show import report" },
-  { stage: "progress_decisions", label: "Collect progress decisions" },
-  { stage: "final_preview", label: "Show final preview" },
-  { stage: "commit", label: "Commit once" },
-];
-
-function phaseStage(phase: Phase, progress?: ImportStageProgress): ImportStage {
-  if (progress) return progress.stage;
-  switch (phase) {
-    case "select": return "select_files";
-    case "parsed": return "validate_parse";
-    case "analyzing": return "analyze_sources";
-    case "report": return "report";
-    case "decisions": return "progress_decisions";
-    case "preview": return "final_preview";
-    case "committing": return "commit";
-    case "complete": return "complete";
-  }
-}
-
-function ImportSteps({ current }: { current: ImportStage }) {
-  const currentIndex = current === "complete" ? steps.length : steps.findIndex((step) => step.stage === current);
-  return <ol className="import-steps" aria-label="Import stages">{steps.map((step, index) =>
-    <li className={index === currentIndex ? "current" : index < currentIndex ? "done" : ""}
-      aria-current={index === currentIndex ? "step" : undefined} key={step.stage}>
-      <span>{index + 1}</span>{step.label}
-    </li>)}</ol>;
-}
 
 function providerErrorLabel(error: ImportProviderError) {
   switch (error.code) {
@@ -85,27 +51,19 @@ function ErrorPanel({ title, message, retry }: { title: string; message: string;
     {retry && <button type="button" onClick={retry}>Retry</button>}</section>;
 }
 
-function CountStrip({ imdb, tvtime, analysis, committed }: {
-  imdb: ImdbParseResult | undefined;
-  tvtime: TvTimeParseResult | undefined;
-  analysis: ImportAnalysis | undefined;
-  committed: number;
-}) {
-  const parsed = (imdb?.totalRows ?? 0) + (tvtime?.shows.length ?? 0);
-  return <><dl className="import-counts">
-    <div><dt>Parsed source records</dt><dd>{parsed}</dd></div>
-    <div><dt>Matched</dt><dd>{analysis?.report.successfullyMerged ?? 0}</dd></div>
-    <div><dt>Unmatched</dt><dd>{analysis?.report.unmatchedShows ?? 0}</dd></div>
-    <div><dt>Committed</dt><dd>{committed}</dd></div>
-  </dl>{analysis && <p className="source-count-summary">IMDb rows: {analysis.counts.imdbRowsParsed} · TV Time shows: {analysis.counts.tvTimeShowsParsed} · TV Time episodes: {analysis.counts.tvTimeEpisodesParsed}.</p>}</>;
-}
-
 function RecordNames({ title, names }: { title: string; names: string[] }) {
   if (names.length === 0) return null;
   return <details className="record-list"><summary>{title} ({names.length})</summary><ul>{names.map((name, index) => <li key={`${name}:${index}`}>{name}</li>)}</ul></details>;
 }
 
-function ImportReportView({ analysis }: { analysis: ImportAnalysis }) {
+/**
+ * Everything an import can tell you, kept out of the way.
+ *
+ * These counters exist to explain a surprising result -- a show that matched the wrong TVMaze
+ * entry, progress that did not carry over -- and are meaningless the rest of the time, so the
+ * summary above stays to what actually needs acting on.
+ */
+function TechnicalDetails({ analysis }: { analysis: ImportAnalysis }) {
   const report = analysis.report;
   const values: Array<[string, number]> = [
     ["IMDb rows parsed", report.imdbRowsParsed],
@@ -118,30 +76,49 @@ function ImportReportView({ analysis }: { analysis: ImportAnalysis }) {
     ["Conflicts", report.conflicts],
     ["Unmatched shows", report.unmatchedShows],
     ["TV Time episodes parsed", report.tvTimeEpisodesParsed],
-    ["Watched episodes successfully mapped", report.watchedEpisodesMapped],
+    ["Watched episodes mapped", report.watchedEpisodesMapped],
     ["Explicit unwatched episodes mapped", report.explicitUnwatchedEpisodesMapped],
     ["Future episodes excluded from backlog", report.futureEpisodesExcludedFromBacklog],
     ["Specials excluded", report.specialsExcluded],
     ["Unresolved episodes", report.unresolvedEpisodes],
-    ["Shows requiring progress setup", report.showsRequiringProgressSetup],
+    ["Episodes filled from watched-only exports", report.episodesBackfilled],
     ["Provider/network errors", report.providerNetworkErrors],
   ];
-  return <section className="report"><h2>Import report</h2><dl className="report-metrics">{values.map(([label, value]) =>
-    <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+  return <details className="technical-details"><summary>Technical details</summary>
+    <dl className="report-metrics">{values.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
     <RecordNames title="Conflicting records" names={report.conflictNames}/>
-    <RecordNames title="Unmatched shows" names={report.unmatchedNames}/>
     <RecordNames title="TV Time-only shows" names={report.tvTimeOnlyNames}/>
     {report.unresolvedEpisodeRecords.length > 0 && <details className="record-list"><summary>Progress could not be mapped ({report.unresolvedEpisodeRecords.length})</summary><ul>
-      {report.unresolvedEpisodeRecords.map((episode) => <li key={`${episode.show}:${episode.tvdbEpisodeId}`}>{episode.show} — S{episode.season}E{episode.episode} {episode.name}: {episode.reason}</li>)}
+      {report.unresolvedEpisodeRecords.map((episode, index) => <li key={`${episode.show}:${episode.tvdbEpisodeId}:${index}`}>{episode.show} — S{episode.season}E{episode.episode} {episode.name}</li>)}
     </ul></details>}
     {report.numberingConflicts.length > 0 && <details className="record-list"><summary>Season/episode numbering conflicts ({report.numberingConflicts.length})</summary><ul>
       {report.numberingConflicts.map((conflict, index) => <li key={`${conflict.show}:${index}`}>{conflict.show} — {conflict.episode}: {conflict.sourceNumber} → {conflict.providerNumber}</li>)}
     </ul></details>}
-    {report.providerErrors.length > 0 && <details className="record-list" open><summary>Provider/network failures ({report.providerErrors.length})</summary><ul>
-      {report.providerErrors.map((error, index) => <li key={`${error.recordName}:${index}`}><strong>{providerErrorLabel(error)} — {error.recordName}</strong>: {error.message}</li>)}
+    {report.backfilledShows.length > 0 && <details className="record-list"><summary>Episodes filled from watched-only exports ({report.backfilledShows.length} shows)</summary>
+      <p className="record-list-note">Refract and the TV Time GDPR export only record episodes you watched, so gaps were filled from each show’s status. A count far larger than the show’s real length usually means it matched the wrong TVMaze show.</p><ul>
+      {report.backfilledShows.map((entry, index) => <li key={`${entry.show}:${index}`}>{entry.show} — {entry.count} episode{entry.count === 1 ? "" : "s"}</li>)}
     </ul></details>}
-  </section>;
+  </details>;
 }
+
+/**
+ * Whether this import actually has something to ask about. IMDb rows carry no watch history, so
+ * their progress has to be chosen; an exact-ID conflict has to be resolved explicitly. Anything
+ * else is fully determined by the export and never needs a screen.
+ */
+function needsDecisions(analysis: ImportAnalysis) {
+  return analysis.records.some((record) => (record.kind === "imdb_only" && record.provider) || record.kind === "conflict");
+}
+
+/** The one thing worth acting on after an import: shows that were skipped. */
+function SkippedShows({ analysis }: { analysis: ImportAnalysis }) {
+  const names = analysis.report.unmatchedNames;
+  if (names.length === 0) return null;
+  return <details className="record-list skipped-shows"><summary>{names.length} show{names.length === 1 ? "" : "s"} couldn’t be matched and {names.length === 1 ? "was" : "were"} skipped</summary>
+    <p className="record-list-note">TVMaze has no entry matching these. You can add them by hand from the Library.</p>
+    <ul>{names.map((name, index) => <li key={`${name}:${index}`}>{name}</li>)}</ul></details>;
+}
+
 
 function recordTiming(analysis: ImportAnalysis, tracker: Tracker): OnboardingTiming {
   return {
@@ -152,7 +129,7 @@ function recordTiming(analysis: ImportAnalysis, tracker: Tracker): OnboardingTim
 }
 
 function availableEpisodes(record: ImportShowRecord, analysis: ImportAnalysis, tracker: Tracker) {
-  return getAvailableRegularEpisodes({ id: record.id, providerStatus: record.provider!.status, episodes: record.episodes }, recordTiming(analysis, tracker));
+  return getAvailableRegularEpisodes({ episodes: record.episodes }, recordTiming(analysis, tracker));
 }
 
 function episodeLabel(episode: ProviderEpisode) {
@@ -197,7 +174,6 @@ function DecisionsView({ analysis, tracker, decisions, setDecisions }: {
     .sort((a, b) => (b.imdb?.created ?? "").localeCompare(a.imdb?.created ?? ""));
   const orderedImdbOnly = [...imdbOnly].sort((a, b) => (b.imdb?.created ?? "").localeCompare(a.imdb?.created ?? ""));
   const finishedIds = new Set(finished.map((record) => record.id));
-  const tvTimeOnly = analysis.records.filter((record) => record.kind === "tvtime_only");
   const conflicts = analysis.records.filter((record) => record.kind === "conflict");
   const updateChoice = (id: string, choice: ActiveProgressChoice | undefined) => setDecisions({ ...decisions, progressChoices: {
     ...decisions.progressChoices,
@@ -229,16 +205,10 @@ function DecisionsView({ analysis, tracker, decisions, setDecisions }: {
     return title.includes(setupSearch.trim().toLowerCase()) && (setupFilter === "all" || (setupFilter === "selected" ? selected : !selected));
   });
   return <>
-    {(analysis.report.unmatchedShows > 0 || analysis.report.unresolvedEpisodes > 0 || analysis.report.numberingConflicts.length > 0) && <section className="report attention-summary"><h2>{analysis.report.unmatchedShows + new Set(analysis.report.unresolvedEpisodeRecords.map((episode) => episode.show)).size} shows need attention</h2>
-      <p>Matched shows will still import. Unmatched shows are skipped. If any TV Time episode states remain unmapped, review and confirm them below before continuing.</p>
-      {analysis.report.unresolvedEpisodes > 0 && <label className="review-confirm"><input type="checkbox" checked={decisions.unresolvedReviewed} onChange={(event) => setDecisions({ ...decisions, unresolvedReviewed: event.target.checked })}/>
-        I reviewed the {analysis.report.unresolvedEpisodes} unmapped episode record{analysis.report.unresolvedEpisodes === 1 ? "" : "s"} and understand they will be skipped.</label>}
-    </section>}
     {conflicts.length > 0 && <section className="report"><h2>Exact ID conflicts</h2><p>Conflicting records cannot be merged silently. Explicitly exclude them from this commit.</p>
       {conflicts.map((record) => <label className="decision-row" key={record.id}><input type="checkbox" checked={decisions.excludedConflictRecordIds.includes(record.id)} onChange={(event) => setDecisions({ ...decisions,
         excludedConflictRecordIds: event.target.checked ? [...decisions.excludedConflictRecordIds, record.id] : decisions.excludedConflictRecordIds.filter((id) => id !== record.id) })}/>
         Exclude {record.imdb?.title ?? record.tvtime?.title ?? record.id}: {record.conflict?.reason}</label>)}</section>}
-    {tvTimeOnly.length > 0 && <section className="report auto-included"><h2>{tvTimeOnly.length} TV Time shows will be added automatically</h2><p>These shows have confident provider matches. Their mapped watched and unwatched history will be imported without additional choices.</p></section>}
     {orderedImdbOnly.length > 0 && <section className="report"><div className="setup-heading"><div><h2>IMDb shows without TV Time history</h2><p>Leave shows you watched through the import date unselected. Select only shows you have not fully watched, then optionally choose the latest episode watched.</p></div><span className="count">{orderedImdbOnly.filter(isSelected).length}</span></div><div className="setup-toolbar"><label className="search"><span aria-hidden="true">⌕</span><span className="sr-only">Search IMDb shows without TV Time history</span><input value={setupSearch} onChange={(event) => setSetupSearch(event.target.value)} placeholder="Search shows"/></label><div className="filter-tabs" role="group" aria-label="Filter IMDb shows without TV Time history">{(["all", "selected", "unselected"] as const).map((filter) => <button type="button" className={setupFilter === filter ? "active" : ""} aria-pressed={setupFilter === filter} key={filter} onClick={() => setSetupFilter(filter)}>{filter === "all" ? "All" : filter === "selected" ? "Selected" : "Not selected"}</button>)}</div></div><div className="onboarding-show-grid">
       {visibleImdbOnly.map((record) => { const selected = isSelected(record); return <FinishedShowChoice key={record.id} record={record} analysis={analysis} tracker={tracker} checked={selected} value={selected ? decisions.progressChoices[record.id] : undefined} uncheckedLabel="Watched through import date" onToggle={(checked) => toggleImdbShow(record, checked)} onChange={(choice) => setImdbProgress(record, choice)}/>; })}</div>{visibleImdbOnly.length === 0 && <p className="empty-inline">No shows match this search and filter.</p>}</section>}
   </>;
@@ -262,8 +232,8 @@ function FinalPreviewView({ preview, decisions, updateDecisions }: {
   const fullyWatched = preview.plans.filter((plan) => plan.desiredState === "completed" || plan.desiredState === "caught_up");
   const exceptions = preview.plans.filter((plan) => !fullyWatched.includes(plan));
   const completed = fullyWatched.filter((plan) => plan.desiredState === "completed").length, caughtUp = fullyWatched.length - completed;
-  return <section className="report final-preview"><div className="preview-title"><div><p className="eyebrow">Ready to commit</p><h2>Final import preview</h2><p>Review the exceptions below. Shows that are fully watched are grouped together.</p></div><span className="count">{preview.committedShows}</span></div>
-    <div className="preview-summary"><div><strong>{fullyWatched.length}</strong><span>Fully watched</span><small>through import date</small></div><div><strong>{exceptions.length}</strong><span>Different progress</span><small>listed below</small></div><div><strong>{preview.newShows}</strong><span>New shows</span><small>{preview.updatedShows} updated</small></div><div><strong>{conflictGroups.size}</strong><span>Local conflicts</span><small>{conflictGroups.size ? "review choices below" : "none"}</small></div></div>
+  return <section className="report final-preview"><h2>Ready to import</h2>
+    <p className="import-done-line"><strong>{preview.committedShows}</strong> show{preview.committedShows === 1 ? "" : "s"} · {preview.newShows} new · {preview.updatedShows} updated{conflictGroups.size > 0 ? ` · ${conflictGroups.size} need a choice below` : ""}</p>
     {fullyWatched.length > 0 && <div className="fully-watched-summary"><span className="summary-check" aria-hidden="true">✓</span><div><strong>{fullyWatched.length} show{fullyWatched.length === 1 ? "" : "s"} watched through the import date</strong><p>{completed > 0 && `${completed} ended show${completed === 1 ? "" : "s"} marked completed`}{completed > 0 && caughtUp > 0 ? " · " : ""}{caughtUp > 0 && `${caughtUp} ongoing show${caughtUp === 1 ? "" : "s"} marked caught up`}.</p></div></div>}
     {exceptions.length > 0 && <div className="preview-exceptions"><h3>Shows with different progress</h3><div className="preview-exception-grid">{exceptions.map((plan) => { const watched = plan.progress.filter((state) => state.watched).length, unwatched = plan.progress.filter((state) => !state.watched).length; return <article key={plan.recordId}><div><strong>{plan.title}</strong><span className="badge">{preview.operationByRecordId[plan.recordId]}</span></div><p><span className="badge accent">{plan.desiredState.replaceAll("_", " ")}</span>{watched > 0 && <span>{watched} watched</span>}{unwatched > 0 && <span>{unwatched} unwatched</span>}{plan.progress.length === 0 && <span>No aired progress records</span>}</p></article>; })}</div></div>}
     {preview.missingDecisions.length > 0 && <div className="error" role="alert"><strong>More decisions are required:</strong><ul>{preview.missingDecisions.map((message) => <li key={message}>{message}</li>)}</ul></div>}
@@ -278,7 +248,8 @@ function FinalPreviewView({ preview, decisions, updateDecisions }: {
 }
 
 export function ImportPage({ tracker }: { tracker: Tracker }) {
-  const { phase, imdb, tvtime, selectedFiles, analysis, decisions, preview, stageProgress, error, commitResult } = useImportStore();
+  const { phase, selectedFiles, analysis, decisions, preview, stageProgress, error, commitResult } = useImportStore();
+  const backupRestore = useBackupRestore(tracker);
   const setPhase = (value: Phase) => useImportStore.setState({ phase: value });
   const setDecisions = (value: ImportDecisions) => useImportStore.setState({ decisions: value });
   const setPreview = (value: ImportPreview) => useImportStore.setState({ preview: value });
@@ -310,6 +281,8 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
 
   async function processFiles(files: File[]) {
     if (files.length === 0) return;
+    const backupFile = files.find((file) => file.name.toLowerCase().endsWith(".json"));
+    if (backupFile) { await backupRestore.inspectFile(backupFile); return; }
     const current = useImportStore.getState();
     const existingKeys = new Set(current.selectedFiles.map((file) => file.key));
     const additions = files.filter((file) => !existingKeys.has(fileKey(file)));
@@ -326,6 +299,7 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
     });
     let nextImdb = current.imdb;
     let nextTvtime = current.tvtime;
+    let nextRefract = current.refract;
     let nextFiles = current.selectedFiles;
     try {
       for (let index = 0; index < additions.length; index++) {
@@ -338,21 +312,32 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
           nextImdb = mergeImdb(nextImdb, parsed);
           selected = { key: fileKey(file), name: file.name, kind: "imdb" };
         } else if (file.name.toLowerCase().endsWith(".zip")) {
-          nextTvtime = parseTvTimeZip(new Uint8Array(await file.arrayBuffer()));
-          nextFiles = nextFiles.filter((selectedFile) => selectedFile.kind !== "tvtime");
-          selected = { key: fileKey(file), name: file.name, kind: "tvtime" };
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          try {
+            nextRefract = parseRefractZip(bytes);
+            nextFiles = nextFiles.filter((selectedFile) => selectedFile.kind !== "refract");
+            selected = { key: fileKey(file), name: file.name, kind: "refract" };
+          } catch (cause) {
+            if (!(cause instanceof RefractImportError) || cause.code !== "not_refract") throw cause;
+            nextTvtime = parseTvTimeZip(bytes);
+            nextFiles = nextFiles.filter((selectedFile) => selectedFile.kind !== "tvtime");
+            selected = { key: fileKey(file), name: file.name, kind: "tvtime" };
+          }
         } else throw new Error(`Unsupported file: ${file.name}`);
         nextFiles = [...nextFiles, selected];
         if (currentOperation !== useImportStore.getState().operationId) return;
         useImportStore.setState({ stageProgress: { stage: "validate_parse", completed: index + 1, total: additions.length, message: `Validated ${index + 1} of ${additions.length} files.` } });
       }
       if (currentOperation !== useImportStore.getState().operationId) return;
-      useImportStore.setState({ imdb: nextImdb, tvtime: nextTvtime, selectedFiles: nextFiles, analysis: undefined, decisions: emptyImportDecisions(), preview: undefined, commitResult: undefined, phase: "parsed", stageProgress: undefined });
+      useImportStore.setState({ imdb: nextImdb, tvtime: nextTvtime, refract: nextRefract, selectedFiles: nextFiles, analysis: undefined, decisions: emptyImportDecisions(), preview: undefined, commitResult: undefined, phase: "parsed", stageProgress: undefined });
+      await runAnalysis();
     } catch (cause) {
       if (currentOperation !== useImportStore.getState().operationId) return;
       const title = cause instanceof TvTimeImportError
         ? cause.code === "zip_validation" ? "ZIP validation failed" : cause.code === "schema" ? "TV Time schema could not be parsed" : "No TV Time shows were found"
-        : "Import validation failed";
+        : cause instanceof RefractImportError
+          ? cause.code === "zip_validation" ? "ZIP validation failed" : cause.code === "schema" ? "Refract schema could not be parsed" : "No Refract shows were found"
+          : "Import validation failed";
       useImportStore.setState({ phase: current.phase, error: { title, message: cause instanceof Error ? cause.message : "The selected import could not be parsed." }, stageProgress: undefined });
     }
   }
@@ -362,18 +347,42 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
   }
 
   async function runAnalysis() {
-    if (!imdb && !tvtime) return;
+    // Read through the store rather than the render closure: this runs immediately after
+    // processFiles commits the parsed sources, when the closure still holds the old values.
+    const { imdb, tvtime, refract } = useImportStore.getState();
+    if (!imdb && !tvtime && !refract) return;
     const currentOperation = useImportStore.getState().operationId + 1;
     useImportStore.setState({ operationId: currentOperation, error: undefined, analysis: undefined, preview: undefined, commitResult: undefined, phase: "analyzing" });
     try {
-      const result = await analyzeImport({ selected: selectFullImportSources(imdb, tvtime), provider: importProvider, settings: tracker.local!.settings,
+      let combinedTvtime = tvtime;
+      if (refract) {
+        // Refract shows have no stable external ID, so resolving each one to a TVMaze show via
+        // search happens here, up front -- once resolved (or not), they're just TvTimeShow
+        // records and flow through the exact same reconciliation as a real TV Time export.
+        const resolved = await resolveRefractShows(refract, importProvider, (completed, total) => {
+          if (currentOperation === useImportStore.getState().operationId) {
+            useImportStore.setState({ stageProgress: { stage: "resolve_ids", completed, total, message: `Matched ${completed} of ${total} Refract shows to TVMaze.` } });
+          }
+        });
+        if (currentOperation !== useImportStore.getState().operationId) return;
+        combinedTvtime = {
+          shows: [...(tvtime?.shows ?? []), ...resolved],
+          specials: tvtime?.specials ?? 0,
+          specialFlagMismatches: tvtime?.specialFlagMismatches ?? 0,
+          ignoredEntries: tvtime?.ignoredEntries ?? [],
+        };
+      }
+      const result = await analyzeImport({ selected: selectFullImportSources(imdb, combinedTvtime), provider: importProvider, settings: tracker.local!.settings,
         onProgress: (progress) => { if (currentOperation === useImportStore.getState().operationId) useImportStore.setState({ stageProgress: progress }); } });
       if (currentOperation !== useImportStore.getState().operationId) return;
       useImportStore.setState({ analysis: result, decisions: emptyImportDecisions(), phase: "report", stageProgress: undefined });
       if (result.report.providerErrors.length > 0) {
         const first = result.report.providerErrors[0]!;
         useImportStore.setState({ error: { title: providerErrorLabel(first), message: `${first.recordName}: ${first.message}` } });
+        return;
       }
+      if (needsDecisions(result)) openDecisions(result);
+      else openPreview(emptyImportDecisions(), result);
     } catch (cause) {
       if (currentOperation !== useImportStore.getState().operationId) return;
       useImportStore.setState({ phase: "parsed", stageProgress: undefined,
@@ -381,10 +390,10 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
     }
   }
 
-  function openDecisions() {
-    if (!analysis || !tracker.local) return;
-    const timing = recordTiming(analysis, tracker), progressChoices = { ...decisions.progressChoices };
-    for (const record of analysis.records.filter((candidate) => candidate.kind === "imdb_only" && candidate.provider)) {
+  function openDecisions(source = analysis) {
+    if (!source || !tracker.local) return;
+    const timing = recordTiming(source, tracker), progressChoices = { ...decisions.progressChoices };
+    for (const record of source.records.filter((candidate) => candidate.kind === "imdb_only" && candidate.provider)) {
       if (classifyOnboardingShow({ id: record.id, providerStatus: record.provider!.status, episodes: record.episodes }, timing) !== "finished" && !progressChoices[record.id]) {
         progressChoices[record.id] = { kind: "caught_up" };
       }
@@ -392,10 +401,9 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
     setDecisions({ ...decisions, finishedMode: "mixture", progressChoices }); setPhase("decisions");
   }
 
-  function openPreview() {
-    if (!analysis || !tracker.local) return;
-    const next = buildImportPreview(analysis, decisions, tracker.local);
-    setPreview(next); setPhase("preview");
+  function openPreview(choices = decisions, source = analysis) {
+    if (!source || !tracker.local) return;
+    setPreview(buildImportPreview(source, choices, tracker.local)); setPhase("preview");
   }
 
   function updatePreviewDecisions(next: ImportDecisions) {
@@ -414,35 +422,40 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
     }
   }
 
-  const current = phaseStage(phase, stageProgress);
   const operationBusy = Boolean(stageProgress) || phase === "analyzing" || phase === "committing";
-  return <><h1>Import</h1><p>Bring your existing show lists and watch history into the tracker. Your files are read locally and changes are not saved until the final commit.</p>
-    <section className="import-guide" aria-labelledby="import-guide-title"><div className="import-guide-heading"><p className="eyebrow">Start here</p><h2 id="import-guide-title">Get your export files</h2><p>You can add files together or choose them one at a time from different folders. Each new selection stays in this import.</p></div><div className="import-guide-grid">
+  const busy = !backupRestore.pendingBackup && !backupRestore.syncProgress && !backupRestore.restoreMessage;
+  return <><h1>Import</h1><p>Bring your existing show lists and watch history into the tracker. Your files are read locally and nothing is saved until you confirm.</p>
+    {phase === "select" && <section className="import-guide" aria-labelledby="import-guide-title"><div className="import-guide-heading"><p className="eyebrow">Start here</p><h2 id="import-guide-title">Get your export files</h2><p>You can add files together or choose them one at a time from different folders. Each new selection stays in this import.</p></div><div className="import-guide-grid">
       <article><span className="guide-source" aria-hidden="true">IMDb</span><h3>Export an IMDb list</h3><ol><li>Sign in to IMDb on a desktop browser and open your Watchlist or another title list.</li><li>Click the 3 dots and select <strong>Export</strong> from the list.</li><li>Keep the downloaded <strong>CSV</strong> file. You may add multiple IMDb list CSVs.</li></ol><a href="https://www.imdb.com/profile/lists" target="_blank" rel="noreferrer">Open your IMDb lists <span aria-hidden="true">↗</span></a></article>
       <article><span className="guide-source" aria-hidden="true">TV</span><h3>Download TV Time GDPR data</h3><ol><li>Open TV Time's GDPR self-service page and sign in.</li><li>Request or generate your account data, then wait until the download is ready.</li><li>Download <strong>gdpr-data.zip</strong> and leave it zipped. Legacy extension-export ZIPs are accepted too.</li></ol><a href="https://gdpr.tvtime.com/gdpr/self-service" target="_blank" rel="noreferrer">Open TV Time data export <span aria-hidden="true">↗</span></a></article>
-    </div></section>
-    <ImportSteps current={current}/>
-    <CountStrip imdb={imdb} tvtime={tvtime} analysis={analysis} committed={commitResult?.committed ?? 0}/>
-    <section className="report source-picker"><h2>1. Select files</h2><p>Choose one or several files now. To add a file from another folder, choose files again—the ones already listed below will remain.</p><label className={`file-drop ${operationBusy ? "disabled" : ""}`} htmlFor="import-files" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (!operationBusy) void processFiles(Array.from(event.dataTransfer.files)); }}><span aria-hidden="true">⇧</span><strong>{selectedFiles.length ? "Add more IMDb CSV or TV Time ZIP files" : "Drop IMDb CSV and TV Time ZIP here"}</strong><small>or choose files from your computer</small><input id="import-files" type="file" multiple accept=".csv,.zip" disabled={operationBusy} onChange={(event) => void choose(event)}/></label>
-      {selectedFiles.length > 0 && <div className="selected-files" aria-label="Selected files">{selectedFiles.map((file) => <span className="badge" key={file.key}><small>{file.kind === "imdb" ? "IMDb" : "TV Time"}</small>{file.name}</span>)}</div>}{(phase !== "select" || operationBusy) && <button type="button" onClick={reset}>{operationBusy ? "Cancel current operation" : "Clear selected files"}</button>}
+    </div></section>}
+    <section className="report source-picker"><h2>Select files</h2><p>Choose one or several files. TV Time and Refract ZIP exports are both accepted and auto-detected. You can also drop a previously exported <strong>imdb-shows-tracker-*.json</strong> backup here to restore it directly.</p><label className={`file-drop ${operationBusy ? "disabled" : ""}`} htmlFor="import-files" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (!operationBusy) void processFiles(Array.from(event.dataTransfer.files)); }}><span aria-hidden="true">⇧</span><strong>{selectedFiles.length ? "Add more IMDb CSV or TV Time/Refract ZIP files" : "Drop IMDb CSV, TV Time/Refract ZIP, or a tracker backup JSON here"}</strong><small>or choose files from your computer</small><input id="import-files" type="file" multiple accept=".csv,.zip,.json" disabled={operationBusy} onChange={(event) => void choose(event)}/></label>
+      {selectedFiles.length > 0 && <div className="selected-files" aria-label="Selected files">{selectedFiles.map((file) => <span className="badge" key={file.key}><small>{file.kind === "imdb" ? "IMDb" : file.kind === "refract" ? "Refract" : "TV Time"}</small>{file.name}</span>)}</div>}{(phase !== "select" || operationBusy) && <button type="button" onClick={reset}>{operationBusy ? "Cancel current operation" : "Clear selected files"}</button>}
     </section>
-    {error && <ErrorPanel title={error.title} message={error.message} retry={phase === "report" && analysis?.report.providerErrors.length ? () => void runAnalysis() : phase === "preview" ? () => void commit() : undefined}/>} 
-    {stageProgress && <section className="report" aria-live="polite"><h2>{steps.find((step) => step.stage === stageProgress.stage)?.label}</h2><p>{stageProgress.message}</p><progress aria-label={stageProgress.message} value={stageProgress.completed} max={Math.max(1, stageProgress.total)}/><div className="import-skeleton" aria-hidden="true"><span/><span/><span/></div></section>}
-    {phase === "parsed" && <section className="report"><h2>2. Validate and parse</h2>
-      {imdb && <p>IMDb: {imdb.totalRows} rows parsed; {imdb.rows.length} supported shows; {imdb.malformed.length} malformed; {imdb.unsupported.length} unsupported; {imdb.duplicates.length} duplicates.</p>}
-      {tvtime && <p>TV Time: {tvtime.shows.length} shows and {tvtime.shows.reduce((total, show) => total + show.episodes.length, 0)} episodes parsed.</p>}
-      <button className="primary" type="button" onClick={() => void runAnalysis()}>Analyze sources</button></section>}
-    {analysis && ["report", "decisions", "preview", "committing", "complete"].includes(phase) && <ImportReportView analysis={analysis}/>} 
-    {phase === "report" && analysis && <div className="import-actions">{analysis.report.providerErrors.length > 0
-      ? <button className="primary" type="button" onClick={() => void runAnalysis()}>Retry failed requests</button>
-      : <button className="primary" type="button" onClick={openDecisions}>Continue to progress setup</button>}</div>}
+    {backupRestore.pendingBackup && <RestorePreview backup={backupRestore.pendingBackup} onCancel={backupRestore.cancel} onConfirm={backupRestore.applyRestore}/>}
+    {backupRestore.syncProgress ? <SyncProgress progress={backupRestore.syncProgress}/> : backupRestore.restoreMessage && <p className={backupRestore.restoreMessage.kind === "error" ? "error" : "success-message"} role="status">{backupRestore.restoreMessage.text}</p>}
+    {busy && <>
+    {error && <ErrorPanel title={error.title} message={error.message} retry={phase === "report" && analysis?.report.providerErrors.length ? () => void runAnalysis() : phase === "preview" ? () => void commit() : undefined}/>}
+    {stageProgress && <section className="report import-progress" aria-live="polite"><p>{stageProgress.message}</p><progress aria-label={stageProgress.message} value={stageProgress.completed} max={Math.max(1, stageProgress.total)}/><div className="import-skeleton" aria-hidden="true"><span/><span/><span/></div></section>}
+    {phase === "report" && analysis && analysis.report.providerErrors.length > 0 && <div className="import-actions">
+      <button className="primary" type="button" onClick={() => void runAnalysis()}>Retry failed requests</button></div>}
     {phase === "decisions" && analysis && <><DecisionsView analysis={analysis} tracker={tracker} decisions={decisions} setDecisions={setDecisions}/><div className="import-actions">
-      <button type="button" onClick={() => setPhase("report")}>Back to report</button><button className="primary" type="button" onClick={openPreview}>Build final preview</button>
+      <button className="primary" type="button" onClick={() => openPreview()}>Continue</button>
     </div></>}
-    {(phase === "preview" || phase === "committing") && preview && <><FinalPreviewView preview={preview} decisions={decisions} updateDecisions={updatePreviewDecisions}/><div className="import-actions">
-      <button type="button" disabled={phase === "committing"} onClick={() => setPhase("decisions")}>Back to decisions</button><button className="primary" type="button" disabled={!preview.ready || phase === "committing"} onClick={() => void commit()}>{phase === "committing" ? "Committing…" : "Commit import once"}</button>
+    {(phase === "preview" || phase === "committing") && preview && analysis && <><FinalPreviewView preview={preview} decisions={decisions} updateDecisions={updatePreviewDecisions}/>
+      <SkippedShows analysis={analysis}/>
+      <div className="import-actions">
+      {needsDecisions(analysis) && <button type="button" disabled={phase === "committing"} onClick={() => setPhase("decisions")}>Back</button>}
+      <button className="primary" type="button" disabled={!preview.ready || phase === "committing"} onClick={() => void commit()}>{phase === "committing" ? "Importing…" : `Import ${preview.committedShows} show${preview.committedShows === 1 ? "" : "s"}`}</button>
     </div></>}
-    {phase === "complete" && commitResult && analysis && <section className="report success" aria-live="polite"><h2>{analysis.report.unmatchedShows || analysis.report.unresolvedEpisodes ? "Import committed with reviewed unresolved records" : "Import complete"}</h2><p>{commitResult.committed} shows committed: {commitResult.newShows} new and {commitResult.updatedShows} updated.</p><p>{commitResult.watchedMapped} watched and {commitResult.explicitUnwatchedMapped} explicit unwatched episode states committed.</p></section>}
+    {phase === "complete" && commitResult && analysis && <section className="report success import-done" aria-live="polite">
+      <h2>Import complete</h2>
+      <p className="import-done-line">Imported <strong>{commitResult.committed}</strong> show{commitResult.committed === 1 ? "" : "s"} and <strong>{commitResult.watchedMapped}</strong> watched episode{commitResult.watchedMapped === 1 ? "" : "s"}.</p>
+      <p className="muted">{commitResult.newShows} new · {commitResult.updatedShows} updated</p>
+      <SkippedShows analysis={analysis}/>
+      <TechnicalDetails analysis={analysis}/>
+      <a className="primary-link" href="#/watch-list">Go to Watch List</a>
+    </section>}</>}
     <TvMazeAttribution/>
   </>;
 }

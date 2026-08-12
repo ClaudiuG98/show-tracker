@@ -16,10 +16,22 @@ interface TvTimeEpisode {
   tvdbEpisodeId: number; season: number; number: number; name: string; special: boolean;
   watched: boolean; watchedAt?: string; rewatchCount: number;
 }
+/**
+ * How to treat provider episodes the export never mentions. Watched-only exports (the GDPR
+ * CSV, Refract) emit a row only for episodes you watched, so an absent episode cannot be read
+ * as "unwatched" -- it is simply unknown, and would otherwise become permanent backlog.
+ *
+ * - `explicit`: the export states watched and unwatched per episode; trust it, fill nothing.
+ * - `watched_through`: fill every aired episode up to the latest watched one, never past it.
+ * - `all_aired`: the show is finished or caught up; fill every aired episode.
+ */
+export type TvTimeCoverage = "explicit" | "watched_through" | "all_aired";
+
 export interface TvTimeShow {
   uuid: string; tvdbShowId?: number; imdbId?: string; title: string; createdAt: string;
   providerShowId?: number;
   rating?: number;
+  coverage?: TvTimeCoverage;
   status: "up_to_date" | "continuing" | "not_started_yet" | "stopped"; episodes: TvTimeEpisode[];
 }
 export interface TvTimeParseResult { shows: TvTimeShow[]; specials: number; specialFlagMismatches: number; ignoredEntries: string[] }
@@ -110,10 +122,19 @@ function parseGdprExport(files: Record<string, Uint8Array>, names: string[], fol
     throw new TvTimeImportError("schema", "TV Time GDPR schema could not be parsed: followed_tv_show.csv.");
   }
 
-  const seenCounts = new Map((userDataName ? csv(files, userDataName) : []).flatMap((row) => {
+  const userData = userDataName ? csv(files, userDataName) : [];
+  const seenCounts = new Map(userData.flatMap((row) => {
     const showId = positiveInteger(row.tv_show_id), count = nonnegativeInteger(row.nb_episodes_seen);
     return showId !== undefined && count !== undefined ? [[showId, count] as const] : [];
   }));
+  // followed_tv_show.csv only lists shows still being followed, so a show dropped from that list
+  // keeps its watch history with no title to attach it to. Both the per-show summary and the
+  // tracking rows name the show, which is enough to rebuild it.
+  const knownTitles = new Map<number, string>();
+  const rememberTitle = (showId: number | undefined, title: string | undefined) => {
+    if (showId !== undefined && title?.trim() && !knownTitles.has(showId)) knownTitles.set(showId, title.trim());
+  };
+  for (const row of userData) rememberTitle(positiveInteger(row.tv_show_id), row.tv_show_name);
   const ratings = new Map((ratingName ? csv(files, ratingName) : []).flatMap((row) => {
     const showId = positiveInteger(row.tv_show_id), rating = Number(row.rating);
     return showId !== undefined && Number.isFinite(rating) && rating >= 1 && rating <= 5 ? [[showId, rating] as const] : [];
@@ -132,6 +153,7 @@ function parseGdprExport(files: Record<string, Uint8Array>, names: string[], fol
         ?? nonnegativeInteger(isV2 ? row.season_number : row.s_no);
       const number = positiveInteger(isV2 ? row.ep_no : row.episode_number)
         ?? positiveInteger(isV2 ? row.episode_number : row.ep_no);
+      rememberTitle(showId, row.series_name);
       if (showId === undefined || episodeId === undefined || season === undefined || number === undefined) continue;
       const watchedAt = timestamp(row.watch_date) ?? timestamp(row.updated_at) ?? timestamp(row.created_at);
       const watchCount = nonnegativeInteger(row.rewatch_count) ?? nonnegativeInteger(row.ep_watch_count) ?? nonnegativeInteger(row.watch_count) ?? 1;
@@ -168,10 +190,36 @@ function parseGdprExport(files: Record<string, Uint8Array>, names: string[], fol
       title,
       createdAt,
       ...(rating !== undefined ? { rating } : {}),
+      // The GDPR export only records watch events, so gaps below the latest watched episode
+      // are missing data rather than deliberate unwatched states.
+      coverage: "watched_through",
       status: stopped ? "stopped" : watchedCount === 0 ? "not_started_yet" : "continuing",
       episodes: [...(episodesByShow.get(showId)?.values() ?? [])].sort((a, b) => a.season - b.season || a.number - b.number || a.tvdbEpisodeId - b.tvdbEpisodeId),
     }];
   });
+
+  // Anything with watch history that the followed list never accounted for. These are treated as
+  // ordinary watched shows rather than stopped ones: no longer appearing in that list says
+  // nothing about whether the show is finished, and calling them stopped would hide them from
+  // the Watch List entirely.
+  const accountedFor = new Set(shows.map((show) => show.tvdbShowId));
+  for (const [showId, episodes] of episodesByShow) {
+    if (accountedFor.has(showId) || episodes.size === 0) continue;
+    const title = knownTitles.get(showId);
+    if (!title) continue;
+    const ordered = [...episodes.values()].sort((a, b) => a.season - b.season || a.number - b.number || a.tvdbEpisodeId - b.tvdbEpisodeId);
+    const rating = ratings.get(showId);
+    shows.push({
+      uuid: `gdpr-tvdb-${showId}`,
+      tvdbShowId: showId,
+      title,
+      createdAt: ordered.flatMap((episode) => episode.watchedAt ? [episode.watchedAt] : []).sort()[0] ?? new Date(0).toISOString(),
+      ...(rating !== undefined ? { rating } : {}),
+      coverage: "watched_through",
+      status: "continuing",
+      episodes: ordered,
+    });
+  }
   if (shows.length === 0) throw new TvTimeImportError("no_shows", "No TV Time shows were found.");
   const used = new Set([followedName, ...(userDataName ? [userDataName] : []), ...(ratingName ? [ratingName] : []), ...trackingNames]);
   return {

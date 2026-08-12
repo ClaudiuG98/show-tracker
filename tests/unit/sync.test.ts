@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ProviderShow, TelevisionProvider } from "../../src/domain/models";
-import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, ensureDailySyncAlarm, ensureMetadataRetryAlarm, runAutomaticSynchronization, shouldRefreshMetadata, synchronize } from "../../src/scheduling/sync";
+import type { ProviderEpisode, ProviderShow, TelevisionProvider } from "../../src/domain/models";
+import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, checkReleaseNotifications, ensureDailySyncAlarm, ensureMetadataRetryAlarm, runAutomaticSynchronization, shouldRefreshMetadata, synchronize } from "../../src/scheduling/sync";
 import { db } from "../../src/storage/database";
 import { emptyLocalState, type LocalState } from "../../src/storage/local-state";
 
@@ -59,6 +59,12 @@ beforeEach(async () => {
       create: vi.fn(async () => undefined),
       clear: vi.fn(async () => true),
     },
+    notifications: {
+      create: vi.fn(async () => "notification-id"),
+    },
+    runtime: {
+      getURL: vi.fn((path: string) => `chrome-extension://test/${path}`),
+    },
   });
   await Promise.all([db.providerShows.clear(), db.episodes.clear(), db.cache.clear()]);
   await db.providerShows.put(providerShow());
@@ -102,6 +108,29 @@ describe("metadata refresh selection", () => {
     expect(provider.getShow).toHaveBeenCalledWith(10);
     expect(provider.getEpisodes).toHaveBeenCalledTimes(1);
     expect(provider.getEpisodes).toHaveBeenCalledWith(10);
+  });
+
+  it("isolates a per-show failure so other shows still refresh, and leaves the failed one eligible for retry", async () => {
+    const secondShow = { ...trackedShow, id: "local-2", externalIds: { tvmazeShow: 11 } };
+    stored.shows = [trackedShow, secondShow];
+    const changed = new Map([[10, 101], [11, 101]]);
+    const provider: TelevisionProvider = {
+      lookupByImdbId: vi.fn(async () => null),
+      lookupByTvdbId: vi.fn(async () => null),
+      getShow: vi.fn(async (id: number) => {
+        if (id === 11) throw new Error("boom");
+        return providerShow(101);
+      }),
+      getEpisodes: vi.fn(async () => []),
+      getChangedShows: vi.fn(async () => changed),
+    };
+
+    await expect(synchronize(provider)).rejects.toThrow("1 show could not be refreshed.");
+
+    expect(provider.getShow).toHaveBeenCalledWith(10);
+    expect(provider.getShow).toHaveBeenCalledWith(11);
+    expect(stored.shows.find((show) => show.id === "local-1")?.providerUpdatedAt).toBe(101);
+    expect(stored.shows.find((show) => show.id === "local-2")?.providerUpdatedAt).toBe(100);
   });
 
   it("clears a previous automatic failure after a successful check", async () => {
@@ -190,5 +219,66 @@ describe("daily synchronization alarm", () => {
     expect(stored.lastSyncFailure).toMatchObject({ message: "TVMaze is unavailable.", attempt: 4 });
     expect(stored.lastSyncFailure?.retryAt).toBeUndefined();
     expect(chrome.alarms.clear).toHaveBeenCalledWith(METADATA_RETRY_ALARM);
+  });
+});
+
+describe("release notifications", () => {
+  const nowMs = new Date("2026-07-26T12:00:00.000Z").getTime();
+  const now = () => nowMs;
+  const episode = (overrides: Partial<ProviderEpisode> = {}): ProviderEpisode => ({
+    id: 1, showId: 10, season: 1, number: 3, name: "New episode", kind: "regular", airstamp: new Date(nowMs - 3 * 3_600_000).toISOString(), ...overrides,
+  });
+
+  it("sets a baseline on first run without notifying", async () => {
+    await db.episodes.put(episode());
+
+    await checkReleaseNotifications(now);
+
+    expect(chrome.notifications.create).not.toHaveBeenCalled();
+    expect(stored.lastReleaseNotifiedAt).toBe(new Date(nowMs).toISOString());
+  });
+
+  it("notifies for a newly released episode of an actively tracked show", async () => {
+    stored.lastReleaseNotifiedAt = new Date(nowMs - 4 * 3_600_000).toISOString();
+    await db.episodes.put(episode());
+
+    await checkReleaseNotifications(now);
+
+    expect(chrome.notifications.create).toHaveBeenCalledTimes(1);
+    expect(chrome.notifications.create).toHaveBeenCalledWith("release:local-1:1", expect.objectContaining({ title: "Silo" }));
+    expect(stored.lastReleaseNotifiedAt).toBe(new Date(nowMs).toISOString());
+  });
+
+  it("does not notify for a paused show", async () => {
+    stored.shows = [{ ...trackedShow, userState: "paused" }];
+    stored.lastReleaseNotifiedAt = new Date(nowMs - 4 * 3_600_000).toISOString();
+    await db.episodes.put(episode());
+
+    await checkReleaseNotifications(now);
+
+    expect(chrome.notifications.create).not.toHaveBeenCalled();
+  });
+
+  it("skips notifying when disabled but still advances the baseline", async () => {
+    stored.settings.notifications = false;
+    stored.lastReleaseNotifiedAt = new Date(nowMs - 4 * 3_600_000).toISOString();
+    await db.episodes.put(episode());
+
+    await checkReleaseNotifications(now);
+
+    expect(chrome.notifications.create).not.toHaveBeenCalled();
+    expect(stored.lastReleaseNotifiedAt).toBe(new Date(nowMs).toISOString());
+  });
+
+  it("ignores episodes released before the last check or still in the future", async () => {
+    stored.lastReleaseNotifiedAt = new Date(nowMs - 4 * 3_600_000).toISOString();
+    await db.episodes.bulkPut([
+      episode({ id: 2, airstamp: new Date(nowMs - 5 * 3_600_000).toISOString() }),
+      episode({ id: 3, airstamp: new Date(nowMs + 24 * 3_600_000).toISOString() }),
+    ]);
+
+    await checkReleaseNotifications(now);
+
+    expect(chrome.notifications.create).not.toHaveBeenCalled();
   });
 });

@@ -16,7 +16,7 @@ afterEach(() => { cleanup(); resetImportStore(); vi.restoreAllMocks(); });
 const show = { id: "local-1", externalIds: { imdb: "tt1", tvmazeShow: 10 }, titleSnapshot: "Silo", userState: "watching" as const,
   tvTimeRating: 4, importSources: ["manual" as const], createdAt: "2024-01-01", updatedAt: "2024-01-01" };
 const domain: DomainState = {
-  settings: { timezone: "UTC", dateOnlyReleaseHour: "09:00" }, shows: [show], progress: [],
+  settings: { timezone: "UTC", dateOnlyReleaseHour: "09:00", notifications: true }, shows: [show], progress: [],
   providerShows: [{ provider: "tvmaze", id: 10, name: "Silo", status: "running", externalIds: { tvmazeShow: 10 },
     image: { medium: "https://static.tvmaze.com/medium.jpg", original: "https://static.tvmaze.com/original.jpg" }, rating: 8.3, updatedAt: 1 }],
   episodes: [
@@ -47,6 +47,7 @@ describe("dashboard cards", () => {
     render(<MemoryRouter><WatchList tracker={tracker({ markEpisode })}/></MemoryRouter>);
     expect(screen.getByText("+1 more")).toBeVisible(); expect(screen.getByRole("img", { name: "Silo poster" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Open Silo episode details: Freedom Day" })).toHaveAttribute("href", "#/show/local-1/episode/1");
+    expect(screen.getByRole("link", { name: "Silo" })).toHaveAttribute("href", "#/show/local-1");
     fireEvent.click(screen.getByRole("button", { name: /Mark Freedom Day watched/ }));
     expect(screen.getByText("Freedom Day").closest("article")).toHaveClass("completing");
     await waitFor(() => expect(markEpisode).toHaveBeenCalled()); resolve();
@@ -217,7 +218,7 @@ describe("route-independent operation status", () => {
     expect(screen.getByText(/The extension will retry/)).toBeVisible();
   });
 
-  it("lets the user review any unresolved episodes that remain", () => {
+  it("keeps the finished import to a one-line result with diagnostics tucked away", () => {
     const unresolved = { show: "Example", tvdbEpisodeId: 999, season: 2, episode: 1, name: "Episode 1", reason: "No compatible episode." };
     const analysis: ImportAnalysis = {
       sessionId: "session",
@@ -228,20 +229,24 @@ describe("route-independent operation status", () => {
       episodesByShow: new Map(),
       report: {
         imdbRowsParsed: 0, tvTimeShowsParsed: 1, exactImdbMatches: 0, exactTvdbMatches: 1,
-        successfullyMerged: 0, imdbOnly: 0, tvTimeOnly: 0, conflicts: 0, unmatchedShows: 0, tvTimeEpisodesParsed: 1,
+        successfullyMerged: 0, imdbOnly: 0, tvTimeOnly: 0, conflicts: 0, unmatchedShows: 1, tvTimeEpisodesParsed: 1,
         watchedEpisodesMapped: 0, explicitUnwatchedEpisodesMapped: 0, futureEpisodesExcludedFromBacklog: 0, specialsExcluded: 0,
-        unresolvedEpisodes: 1, showsRequiringProgressSetup: 0, providerNetworkErrors: 0, conflictNames: [], unmatchedNames: [],
-        tvTimeOnlyNames: [], unresolvedEpisodeRecords: [unresolved], numberingConflicts: [], providerErrors: [],
+        unresolvedEpisodes: 1, episodesBackfilled: 0, showsRequiringProgressSetup: 0, providerNetworkErrors: 0, conflictNames: [], unmatchedNames: ["Safe"],
+        tvTimeOnlyNames: [], unresolvedEpisodeRecords: [unresolved], numberingConflicts: [], backfilledShows: [], providerErrors: [],
       },
     };
-    useImportStore.setState({ phase: "decisions", analysis, decisions: emptyImportDecisions() });
+    useImportStore.setState({ phase: "complete", analysis, decisions: emptyImportDecisions(),
+      commitResult: { committed: 213, newShows: 180, updatedShows: 33, watchedMapped: 6112, explicitUnwatchedMapped: 0 } });
 
     render(<MemoryRouter><ImportPage tracker={tracker()}/></MemoryRouter>);
-    const review = screen.getByRole("checkbox", { name: /I reviewed the 1 unmapped episode record/ });
-    expect(review).not.toBeChecked();
-    fireEvent.click(review);
-    expect(review).toBeChecked();
-    expect(useImportStore.getState().decisions.unresolvedReviewed).toBe(true);
+
+    expect(screen.getByRole("heading", { name: "Import complete" })).toBeVisible();
+    expect(screen.getByText(/Imported/)).toHaveTextContent("Imported 213 shows and 6112 watched episodes.");
+    // The one actionable leftover stays visible; every raw counter hides behind one toggle.
+    expect(screen.getByText(/1 show couldn.t be matched/)).toBeVisible();
+    expect(screen.getByText("Technical details")).toBeVisible();
+    expect(screen.queryByText("Exact TVDB matches")).not.toBeVisible();
+    expect(screen.getByRole("link", { name: "Go to Watch List" })).toHaveAttribute("href", "#/watch-list");
   });
 });
 

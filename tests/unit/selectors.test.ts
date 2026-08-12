@@ -1,7 +1,7 @@
 import { describe,expect,it } from "vitest";
 import { selectUpcomingShows, selectWatchListShows } from "../../src/domain/selectors";
 import type { DomainState } from "../../src/domain/selectors";
-const state:DomainState={settings:{timezone:"UTC",dateOnlyReleaseHour:"09:00"},providerShows:[],progress:[],shows:[{id:"s",externalIds:{tvmazeShow:1},titleSnapshot:"Show",userState:"watching",importSources:["manual"],createdAt:"",updatedAt:""}],episodes:[{id:1,showId:1,season:1,number:1,kind:"regular",airstamp:"2024-01-01T00:00:00Z"},{id:2,showId:1,season:1,number:2,kind:"regular",airstamp:"2024-01-02T00:00:00Z"},{id:3,showId:1,season:1,number:3,kind:"regular",airstamp:"2099-01-01T00:00:00Z"}]};
+const state:DomainState={settings:{timezone:"UTC",dateOnlyReleaseHour:"09:00",notifications:true},providerShows:[],progress:[],shows:[{id:"s",externalIds:{tvmazeShow:1},titleSnapshot:"Show",userState:"watching",importSources:["manual"],createdAt:"",updatedAt:""}],episodes:[{id:1,showId:1,season:1,number:1,kind:"regular",airstamp:"2024-01-01T00:00:00Z"},{id:2,showId:1,season:1,number:2,kind:"regular",airstamp:"2024-01-02T00:00:00Z"},{id:3,showId:1,season:1,number:3,kind:"regular",airstamp:"2099-01-01T00:00:00Z"}]};
 describe("watch list",()=>it("shows the earliest backlog episode and additional aired count",()=>{const item=selectWatchListShows(state,new Date("2025-01-01"))[0];expect(item?.episode.id).toBe(1);expect(item?.additional).toBe(1);}));
 
 describe("watch list advancement", () => {

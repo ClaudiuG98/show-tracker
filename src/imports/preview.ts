@@ -19,7 +19,6 @@ type FinishedListMode = "watched_everything" | "mixture";
 export interface ImportDecisions {
   includeTvTimeOnlyRecordIds: string[];
   tvTimeOnlyReviewed: boolean;
-  unresolvedReviewed: boolean;
   excludedConflictRecordIds: string[];
   finishedMode?: FinishedListMode;
   finishedNotStartedRecordIds: string[];
@@ -30,7 +29,6 @@ export interface ImportDecisions {
 export const emptyImportDecisions = (): ImportDecisions => ({
   includeTvTimeOnlyRecordIds: [],
   tvTimeOnlyReviewed: false,
-  unresolvedReviewed: false,
   excludedConflictRecordIds: [],
   finishedNotStartedRecordIds: [],
   progressChoices: {},
@@ -46,6 +44,7 @@ export interface ImportShowPlan {
   imdbAddedAt?: string;
   tvTimeAddedAt?: string;
   tvTimeRating?: number;
+  imdbRating?: number;
   tvtimeShowId?: string;
   desiredState: UserShowState;
   progress: ImportedEpisodeState[];
@@ -138,6 +137,7 @@ function createPlan(
     ...(record.imdb?.created ? { imdbAddedAt: record.imdb.created } : {}),
     ...(record.tvtime?.createdAt ? { tvTimeAddedAt: record.tvtime.createdAt } : {}),
     ...(record.tvtime?.rating !== undefined ? { tvTimeRating: record.tvtime.rating } : {}),
+    ...(record.imdb?.userRating !== undefined ? { imdbRating: record.imdb.userRating } : {}),
     ...(record.tvtime?.uuid ? { tvtimeShowId: record.tvtime.uuid } : {}),
     desiredState,
     progress,
@@ -168,10 +168,9 @@ export function buildImportPreview(
   decisions: ImportDecisions,
   local: LocalState,
 ): ImportPreview {
+  // Unresolved episodes are reported, not gated: skipping an episode state changes nothing that
+  // already exists, so it never needs to block a commit the way a real conflict does.
   const missingDecisions: string[] = analysis.report.providerErrors.map((error) => `${error.recordName}: ${error.message}`);
-  if (analysis.report.unresolvedEpisodes > 0 && !decisions.unresolvedReviewed) {
-    missingDecisions.push(`Review ${analysis.report.unresolvedEpisodes} unresolved TV Time episode record${analysis.report.unresolvedEpisodes === 1 ? "" : "s"}.`);
-  }
   const plans: ImportShowPlan[] = [];
   const onboardingTiming = timing(analysis, local);
   const imdbOnly = analysis.records.filter((record) => record.kind === "imdb_only" && record.provider);

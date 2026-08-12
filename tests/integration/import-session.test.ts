@@ -10,7 +10,7 @@ import { parseTvTimeZip, type TvTimeShow } from "../../src/imports/tvtime";
 import { db } from "../../src/storage/database";
 import { emptyLocalState, type LocalState } from "../../src/storage/local-state";
 
-const settings = { timezone: "UTC", dateOnlyReleaseHour: "09:00" };
+const settings = { timezone: "UTC", dateOnlyReleaseHour: "09:00", notifications: true };
 const now = new Date("2025-01-10T12:00:00Z");
 
 function providerShow(id = 100): ProviderShow {
@@ -32,7 +32,7 @@ const episodes: ProviderEpisode[] = [
 ];
 
 function imdbRow(): ImdbImportRow {
-  return { imdbId: "tt1", title: "Silo", titleType: "series", created: "2024-01-01" };
+  return { imdbId: "tt1", title: "Silo", titleType: "series", created: "2024-01-01", userRating: 8 };
 }
 
 function tvTimeShow(): TvTimeShow {
@@ -120,6 +120,7 @@ describe("staged import analysis and commit", () => {
     expect(stored?.shows).toHaveLength(1);
     expect(stored?.shows[0]?.userState).toBe("watching");
     expect(stored?.shows[0]?.tvTimeRating).toBe(4);
+    expect(stored?.shows[0]?.imdbRating).toBe(8);
     expect(stored?.progress.map((state) => [state.tvmazeEpisodeId, state.watched, state.source])).toEqual([
       [1, true, "tvtime"], [2, false, "tvtime"], [3, false, "tvtime"],
     ]);
@@ -197,15 +198,16 @@ describe("staged import analysis and commit", () => {
     expect(provider.episodeCalls).toBe(2);
   });
 
-  it("requires explicit review before committing unresolved progress", async () => {
+  it("reports unresolved progress without blocking the commit on it", async () => {
     const source = tvTimeShow();
     source.episodes.push({ tvdbEpisodeId: 999, season: 9, number: 9, name: "Unresolved", special: false, watched: true, rewatchCount: 0 });
     const analysis = await analyzeImport({ selected: selected([imdbRow()], [source]), provider: new FakeProvider(), settings, now });
+
+    // Skipping an episode state changes nothing that already exists, so it is surfaced in the
+    // report but never held over the user as a decision.
     expect(analysis.report.unresolvedEpisodes).toBe(1);
-    const local = { ...emptyLocalState(), settings };
-    expect(buildImportPreview(analysis, emptyImportDecisions(), local)).toMatchObject({ ready: false });
-    const reviewed = { ...emptyImportDecisions(), unresolvedReviewed: true };
-    expect(buildImportPreview(analysis, reviewed, local)).toMatchObject({ ready: true, committedShows: 1 });
+    expect(buildImportPreview(analysis, emptyImportDecisions(), { ...emptyLocalState(), settings }))
+      .toMatchObject({ ready: true, committedShows: 1, missingDecisions: [] });
   });
 
   it("lets an explicit TV Time unwatched state replace an older IMDb assumption", async () => {
@@ -221,6 +223,47 @@ describe("staged import analysis and commit", () => {
     expect(preview.localProgressConflicts).toHaveLength(0);
     await commitImport(analysis, preview, decisions);
     expect(stored?.progress.find((state) => state.tvmazeEpisodeId === 2)).toMatchObject({ watched: false, source: "tvtime" });
+  });
+
+  it("fills the gaps a watched-only export leaves, keeps the unwatched tail, and respects user edits", async () => {
+    // Only episode 2 was exported: episode 1 is a gap below it, episode 3 is the tail the user
+    // genuinely has not reached, and the local episode 1 row is a deliberate user decision.
+    const source: TvTimeShow = { ...tvTimeShow(), coverage: "watched_through", episodes: [
+      { tvdbEpisodeId: 102, season: 1, number: 2, name: "Two", special: false, watched: true, watchedAt: "2025-01-05T00:00:00Z", rewatchCount: 0 },
+    ] };
+    const analysis = await analyzeImport({ selected: selected([], [source]), provider: new FakeProvider(), settings, now });
+
+    expect(analysis.report.episodesBackfilled).toBe(1);
+    expect(analysis.report.backfilledShows).toMatchObject([{ show: "Silo", count: 1 }]);
+
+    const local: LocalState = {
+      ...emptyLocalState(), settings,
+      shows: [{ id: "local", externalIds: providerShow().externalIds, titleSnapshot: "Silo", userState: "watching", importSources: ["tvtime"], createdAt: "2024-01-01", updatedAt: "2024-01-01" }],
+      progress: [{ localShowId: "local", tvmazeEpisodeId: 1, season: 1, episode: 1, watched: false, source: "user" }],
+    };
+    stored = local;
+    const decisions = emptyImportDecisions();
+    await commitImport(analysis, buildImportPreview(analysis, decisions, local), decisions);
+
+    expect(stored?.progress.find((state) => state.tvmazeEpisodeId === 1)).toMatchObject({ watched: false, source: "user" });
+    expect(stored?.progress.find((state) => state.tvmazeEpisodeId === 2)).toMatchObject({ watched: true, source: "tvtime" });
+    expect(stored?.progress.find((state) => state.tvmazeEpisodeId === 3)).toBeUndefined();
+  });
+
+  it("marks every aired episode watched for a show the export says is finished", async () => {
+    const source: TvTimeShow = { ...tvTimeShow(), coverage: "all_aired", episodes: [] };
+    const analysis = await analyzeImport({ selected: selected([], [source]), provider: new FakeProvider(), settings, now });
+
+    // Episodes 1 and 2 have aired; episode 3 is still in the future and episode 4 is a special.
+    expect(analysis.report.episodesBackfilled).toBe(2);
+    const local = { ...emptyLocalState(), settings };
+    stored = local;
+    const decisions = emptyImportDecisions();
+    await commitImport(analysis, buildImportPreview(analysis, decisions, local), decisions);
+
+    expect(stored?.progress.map((state) => state.tvmazeEpisodeId).sort()).toEqual([1, 2]);
+    expect(stored?.progress.every((state) => state.watched && state.source === "backfill")).toBe(true);
+    expect(stored?.shows[0]).toMatchObject({ userState: "caught_up" });
   });
 
   it("does not erase prior TV Time history during an IMDb-only reimport", async () => {

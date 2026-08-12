@@ -1,7 +1,7 @@
 import type { ProviderAlternateEpisodeMapping, ProviderEpisode, ProviderShow, ProviderStatus, TelevisionProvider } from "../../domain/models";
 import { db, type CacheEntry } from "../../storage/database";
 import { tvMazeRequest, type TvMazeRequest } from "./client";
-import { tvMazeAlternateEpisodeSchema, tvMazeAlternateListSchema, tvMazeEpisodeSchema, tvMazeShowSchema } from "./schemas";
+import { tvMazeAlternateEpisodeSchema, tvMazeAlternateListSchema, tvMazeEpisodeSchema, tvMazeSearchResultSchema, tvMazeShowSchema } from "./schemas";
 
 const TVMAZE_CACHE_TTL = {
   exactLookupMs: 7 * 24 * 60 * 60 * 1_000,
@@ -82,7 +82,10 @@ function normalizeShow(raw: unknown): ProviderShow {
     ...(show.language ? { language: show.language } : {}),
     ...(show.type ? { showType: show.type } : {}),
     ...(show.network?.name ? { networkName: show.network.name } : {}),
-    ...(show.webChannel?.name ? { webChannelName: show.webChannel.name } : {}), detailsLoaded: true, metadataVersion: 2,
+    ...(show.webChannel?.name ? { webChannelName: show.webChannel.name } : {}),
+    // Global streamers report no country at all, so this is only ever a hint.
+    ...(show.network?.country?.code || show.webChannel?.country?.code
+      ? { country: (show.network?.country?.code ?? show.webChannel?.country?.code)! } : {}), detailsLoaded: true, metadataVersion: 2,
     ...(show.url ? { providerUrl: show.url } : {}), updatedAt: show.updated,
   };
 }
@@ -233,6 +236,18 @@ export class TvMazeProvider implements TelevisionProvider {
     }))).flat();
     await this.writeCache(key, mappings, TVMAZE_CACHE_TTL.episodesMs);
     return mappings;
+  }
+
+  async searchShows(query: string): Promise<ProviderShow[]> {
+    const trimmed = query.trim();
+    if (!trimmed) return [];
+    const raw = await this.request(`/search/shows?q=${encodeURIComponent(trimmed)}`);
+    if (!Array.isArray(raw)) return [];
+    const results: ProviderShow[] = [];
+    for (const item of raw) {
+      try { results.push(normalizeShow(tvMazeSearchResultSchema.parse(item).show)); } catch { /* skip malformed search entries */ }
+    }
+    return results;
   }
 
   async getChangedShows(since: "day" | "week" | "month" | "all") {

@@ -34,6 +34,7 @@ export interface TvMazeClientOptions {
   maxAttempts?: number;
   maxConcurrency?: number;
   minStartIntervalMs?: number;
+  requestTimeoutMs?: number;
 }
 
 function retryAfterMilliseconds(value: string | null, now: number) {
@@ -53,6 +54,7 @@ export function createTvMazeRequest(options: TvMazeClientOptions = {}): TvMazeRe
   const maxAttempts = Math.max(1, options.maxAttempts ?? 4);
   const maxConcurrency = Math.max(1, options.maxConcurrency ?? 4);
   const minStartIntervalMs = Math.max(0, options.minStartIntervalMs ?? 500);
+  const requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
 
   const inflight = new Map<string, Promise<unknown | null>>();
   const waiters: Array<() => void> = [];
@@ -75,9 +77,14 @@ export function createTvMazeRequest(options: TvMazeClientOptions = {}): TvMazeRe
 
   async function fetchWithSlot(path: string) {
     await acquire();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
-      return await fetchFn(`${apiBaseUrl}${path}`, { headers: { Accept: "application/json" } });
+      // A stalled connection (e.g. a rate-limited server that drops the socket instead of
+      // responding) otherwise leaves fetch() pending forever, freezing everything queued behind it.
+      return await fetchFn(`${apiBaseUrl}${path}`, { headers: { Accept: "application/json" }, signal: controller.signal });
     } finally {
+      clearTimeout(timeout);
       release();
     }
   }

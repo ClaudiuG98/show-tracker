@@ -93,4 +93,31 @@ describe("TVMaze provider cache", () => {
       { id: 1001, kind: "regular" }, { id: 1002, kind: "special" }, { id: 1003, kind: "special" },
     ]);
   });
+
+  it("searches shows by title and normalizes each result", async () => {
+    const request = vi.fn<TvMazeRequest>(async () => [{ score: 0.9, show: showDto }]);
+    const provider = new TvMazeProvider({ request, cache: null });
+
+    const results = await provider.searchShows("Silo");
+
+    expect(request).toHaveBeenCalledWith("/search/shows?q=Silo");
+    expect(results).toMatchObject([{ id: 101, name: "Silo" }]);
+  });
+
+  it("skips malformed search entries instead of throwing", async () => {
+    const request = vi.fn<TvMazeRequest>(async () => [{ score: 0.9, show: { id: "not-a-number" } }, { score: 0.5, show: showDto }]);
+    const provider = new TvMazeProvider({ request, cache: null });
+
+    const results = await provider.searchShows("Silo");
+
+    expect(results).toMatchObject([{ id: 101 }]);
+  });
+
+  it("returns no results for a blank query without making a request", async () => {
+    const request = vi.fn<TvMazeRequest>(async () => []);
+    const provider = new TvMazeProvider({ request, cache: null });
+
+    await expect(provider.searchShows("   ")).resolves.toEqual([]);
+    expect(request).not.toHaveBeenCalled();
+  });
 });

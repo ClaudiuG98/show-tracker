@@ -1,6 +1,7 @@
 import { getEpisodeAvailability } from "../domain/availability";
 import type { ProviderAlternateEpisodeMapping, ProviderEpisode, ProviderShow, Settings, WatchedEpisodeState } from "../domain/models";
 import type { ImdbImportRow } from "./imdb";
+import { getAvailableRegularEpisodes } from "./onboarding";
 import type { TvTimeShow } from "./tvtime";
 
 type ShowMatchKind = "matched" | "imdb_only" | "tvtime_only" | "conflict" | "unmatched";
@@ -140,6 +141,25 @@ export function mapTvTimeProgressDetailed(
     const name = normalizeName(mapping.name); if (!name) continue;
     alternateByName.set(name, [...(alternateByName.get(name) ?? []), mapping]);
   }
+  // Some sources group the same episodes into different seasons than TVMaze: Netflix re-cut
+  // Money Heist's parts, and anime arcs are bundled differently show to show. Season/episode
+  // numbers then disagree everywhere even though both sides hold the same run, so the episodes
+  // are matched by their position in that run instead.
+  //
+  // Deliberately narrow: it only engages when no external ID resolved (so a source with usable
+  // TVDB ids is never second-guessed), the numbers genuinely fail to line up, and both sides
+  // hold exactly the same number of regular episodes -- which is the evidence that the two
+  // orderings really are the same run, just cut differently.
+  const bySequence = (a: { season: number; number: number }, b: { season: number; number: number }) =>
+    a.season - b.season || a.number - b.number;
+  const sourceRegular = tvtime.episodes.filter((episode) => !episode.special).sort(bySequence);
+  const providerOrdered = regular.slice().sort(bySequence);
+  const numbersAlign = sourceRegular.every((episode) => byNumber.has(`${episode.season}:${episode.number}`));
+  const externalIdsResolve = sourceRegular.some((episode) => byTvdb.has(episode.tvdbEpisodeId));
+  const byPosition = !numbersAlign && !externalIdsResolve && sourceRegular.length === providerOrdered.length
+    ? new Map(sourceRegular.map((episode, index) => [`${episode.season}:${episode.number}`, providerOrdered[index]!] as const))
+    : undefined;
+
   const states: ImportedEpisodeState[] = [];
   const unresolved: UnresolvedTvTimeEpisode[] = [];
   const numberingConflicts: EpisodeNumberingConflict[] = [];
@@ -154,7 +174,8 @@ export function mapTvTimeProgressDetailed(
       continue;
     }
     const externalMatch = byTvdb.get(episode.tvdbEpisodeId);
-    const provider = externalMatch ?? byNumber.get(`${episode.season}:${episode.number}`);
+    const positionalMatch = byPosition?.get(`${episode.season}:${episode.number}`);
+    const provider = externalMatch ?? positionalMatch ?? byNumber.get(`${episode.season}:${episode.number}`);
     let providers = provider ? [provider] : [];
     if (providers.length === 0) {
       const candidates = alternateByName.get(normalizeName(episode.name)) ?? [];
@@ -172,7 +193,7 @@ export function mapTvTimeProgressDetailed(
       });
       continue;
     }
-    if ((externalMatch || !provider) && (providers[0]!.season !== episode.season || providers[0]!.number !== episode.number)) {
+    if ((externalMatch || positionalMatch || !provider) && (providers[0]!.season !== episode.season || providers[0]!.number !== episode.number)) {
       numberingConflicts.push({
         show: tvtime.title,
         episode: episode.name,
@@ -182,7 +203,7 @@ export function mapTvTimeProgressDetailed(
     }
     for (const target of providers) states.push({
       tvmazeEpisodeId: target.id,
-      ...(providers.length === 1 ? { tvdbEpisodeId: episode.tvdbEpisodeId } : {}),
+      ...(externalMatch ? { tvdbEpisodeId: episode.tvdbEpisodeId } : {}),
       season: target.season, episode: target.number, watched: episode.watched,
       ...(episode.watched && episode.watchedAt ? { watchedAt: episode.watchedAt } : {}), source: "tvtime", rewatchCount: episode.rewatchCount,
     });
@@ -200,4 +221,51 @@ export function mapTvTimeProgressDetailed(
     return { ...base, watched, ...(watched && watchedAt ? { watchedAt } : {}), rewatchCount: Math.max(...group.map((state) => state.rewatchCount ?? 0)) };
   });
   return { states: mergedStates, watchedMapped, explicitUnwatchedMapped, futureUnwatchedExcluded, specialsExcluded, unresolved, numberingConflicts };
+}
+
+/**
+ * Fills the gaps a watched-only export leaves behind.
+ *
+ * `mapTvTimeProgressDetailed` is source-driven, so a provider episode the export never mentions
+ * gets no state at all -- and every read path treats a missing state as unwatched, which turns
+ * it into permanent backlog. That is correct for an export that states both watched and
+ * unwatched per episode, but Refract and the TV Time GDPR CSV only record episodes you watched,
+ * so their gaps are unknowns rather than deliberate unwatched states. Numbering differences
+ * against TVMaze produce the same holes even when the export itself is complete.
+ *
+ * Existing states are never overwritten -- only episodes the mapping produced nothing for are
+ * added -- so real source data, including an explicit unwatched, always wins.
+ */
+export function fillProgressCoverage(
+  tvtime: TvTimeShow,
+  providerEpisodes: ProviderEpisode[],
+  states: ImportedEpisodeState[],
+  clock: ProgressMappingClock,
+): { states: ImportedEpisodeState[]; backfilled: number } {
+  const coverage = tvtime.coverage ?? "explicit";
+  if (coverage === "explicit") return { states, backfilled: 0 };
+
+  const available = getAvailableRegularEpisodes({ episodes: providerEpisodes }, {
+    importInstant: clock.now,
+    timezone: clock.settings.timezone,
+    dateOnlyReleaseHour: clock.settings.dateOnlyReleaseHour,
+  });
+  const mapped = new Set(states.flatMap((state) => state.tvmazeEpisodeId === undefined ? [] : [state.tvmazeEpisodeId]));
+  const watched = new Set(states.flatMap((state) => state.watched && state.tvmazeEpisodeId !== undefined ? [state.tvmazeEpisodeId] : []));
+  // `all_aired` covers the whole aired run; `watched_through` stops at the latest watched
+  // episode so a part-way show keeps the unwatched tail it is genuinely at.
+  const through = coverage === "all_aired"
+    ? available.length - 1
+    : available.reduce((last, episode, index) => watched.has(episode.id) ? index : last, -1);
+
+  const filled = available.slice(0, through + 1)
+    .filter((episode) => !mapped.has(episode.id))
+    .map((episode): ImportedEpisodeState => ({
+      tvmazeEpisodeId: episode.id,
+      season: episode.season,
+      episode: episode.number,
+      watched: true,
+      source: "backfill",
+    }));
+  return { states: [...states, ...filled], backfilled: filled.length };
 }

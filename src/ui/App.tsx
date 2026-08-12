@@ -1,17 +1,24 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Component, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router";
 import { differenceInCalendarDays, formatDistanceToNow } from "date-fns";
 import { formatInTimeZone } from "date-fns-tz";
-import { createBackup, parseBackup, type TrackerBackup } from "../backup/backup";
+import { createBackup } from "../backup/backup";
 import { episodeReleaseInstant, getEpisodeAvailability } from "../domain/availability";
 import type { ProviderEpisode, ProviderShow, TrackedShow } from "../domain/models";
 import { selectUpcomingShows, selectWatchListShows } from "../domain/selectors";
 import { groupRegularEpisodesBySeason, librarySummary, posterUrls, providerFor } from "../domain/view-models";
 import { clearTrackerDatabase } from "../storage/database";
-import { emptyLocalState, writeLocalState } from "../storage/local-state";
+import { emptyLocalState, updateLocalState, writeLocalState } from "../storage/local-state";
 import { ImportPage } from "./import/ImportPage";
+import { resetImportStore } from "./import/import-store";
+import { AddShowModal } from "./components/AddShowModal";
+import { AsyncButton } from "./components/AsyncButton";
+import { RestorePreview } from "./components/RestorePreview";
+import { SyncProgress } from "./components/SyncProgress";
 import { TvMazeAttribution } from "./components/Attribution";
 import { Poster } from "./components/Poster";
+import { resetBackupRestoreStore } from "./backup-restore-store";
+import { useBackupRestore } from "./useBackupRestore";
 import { useTracker } from "./useTracker";
 
 type Tracker = ReturnType<typeof useTracker>;
@@ -20,30 +27,6 @@ const stateLabel = (value: string) => value.replaceAll("_", " ");
 const waitForExit = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
   ? Promise.resolve()
   : new Promise<void>((resolve) => window.setTimeout(resolve, 180));
-
-type AsyncButtonProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "onClick"> & {
-  onAction: (event: React.MouseEvent<HTMLButtonElement>) => Promise<unknown>;
-  busyLabel?: string;
-  successLabel?: string;
-  busy?: boolean;
-};
-
-function AsyncButton({ onAction, busyLabel = "Working…", successLabel, busy = false, children, disabled, className = "", ...props }: AsyncButtonProps) {
-  const [state, setState] = useState<"idle" | "busy" | "success" | "error">("idle"), [error, setError] = useState("");
-  const run = async (event: React.MouseEvent<HTMLButtonElement>) => {
-    if (state === "busy") return;
-    setState("busy"); setError("");
-    try {
-      await onAction(event);
-      if (successLabel) { setState("success"); window.setTimeout(() => setState("idle"), 1_600); }
-      else setState("idle");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The action could not be completed."); setState("error");
-    }
-  };
-  const isBusy = busy || state === "busy";
-  return <span className={`async-control ${isBusy ? "busy" : state}`}><button {...props} className={`${className} async-button`.trim()} disabled={disabled || isBusy} aria-busy={isBusy} onClick={(event) => void run(event)}>{isBusy ? <><span className="button-spinner" aria-hidden="true"/>{busyLabel && <span>{busyLabel}</span>}</> : <span>{state === "success" && successLabel ? successLabel : children}</span>}</button>{state === "error" && <span className="button-feedback" role="alert">{error} Try again.</span>}</span>;
-}
 
 function historyDescription(action: NonNullable<Tracker["local"]>["history"][number], tracker: Tracker) {
   if (action.action === "state_changed") return `Status changed from ${stateLabel(action.before.userState)} to ${stateLabel(action.after.userState)}`;
@@ -71,10 +54,13 @@ function formatAddedDate(value: string) {
     : new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric" }).format(date);
 }
 
-function CardTitle({ show, provider, showRatings = false }: { show: TrackedShow; provider: ProviderShow | undefined; showRatings?: boolean }) {
-  return <div className="card-title"><h2>{show.titleSnapshot}</h2>{showRatings && <span className="card-ratings">
+function CardTitle({ show, provider, showRatings = false, titleHref }: { show: TrackedShow; provider: ProviderShow | undefined; showRatings?: boolean; titleHref?: string }) {
+  return <div className="card-title"><h2>{titleHref
+    ? <a className="card-title-link" href={titleHref} title={`Open ${show.titleSnapshot} show details`}>{show.titleSnapshot}</a>
+    : show.titleSnapshot}</h2>{showRatings && <span className="card-ratings">
     {provider?.rating != null && <span title={`TVMaze rating: ${provider.rating.toFixed(1)} out of 10`} aria-label={`TVMaze rating ${provider.rating.toFixed(1)} out of 10`}><span aria-hidden="true">★</span> {provider.rating.toFixed(1)}</span>}
     {show.tvTimeRating != null && <span title={`TV Time rating: ${show.tvTimeRating.toFixed(1)} out of 5`} aria-label={`TV Time rating ${show.tvTimeRating.toFixed(1)} out of 5`}><span aria-hidden="true">★</span> {show.tvTimeRating.toFixed(1)}</span>}
+    {show.imdbRating != null && <span title={`Your IMDb rating: ${show.imdbRating.toFixed(1)} out of 10`} aria-label={`Your IMDb rating ${show.imdbRating.toFixed(1)} out of 10`}><span aria-hidden="true">★</span> {show.imdbRating.toFixed(1)}</span>}
   </span>}</div>;
 }
 
@@ -136,8 +122,9 @@ export function WatchList({ tracker }: { tracker: Tracker }) {
   return <><PageHeading title="Watch List" description="Pick up with the earliest available unwatched episode."/>
     {actionError && <p className="error-panel compact" role="alert">{actionError} Try again.</p>}
     {!items.length && <Empty title="Nothing waiting">You’re caught up, or your shows still need progress setup.</Empty>}
-    <section className="watch-grid" aria-label="Episodes waiting">{items.map(({ show, episode, additional }) => { const provider = providerFor(tracker.domain!, show), poster = posterUrls(provider), released = episodeReleaseInstant(episode, tracker.domain!.settings.timezone, tracker.domain!.settings.dateOnlyReleaseHour); return <article className={`watch-card ${completing.has(show.id) ? "completing" : ""}`} key={show.id}>
-      <a className="card-link" href={`#/show/${show.id}/episode/${episode.id}`} aria-label={`Open ${show.titleSnapshot} episode details: ${episode.name ?? episodeCode(episode)}`}><Poster title={show.titleSnapshot} {...poster}/><div className="card-copy"><CardTitle show={show} provider={provider}/><div className="episode-code">{episodeCode(episode)} {additional > 0 && <span>+{additional} more</span>}</div><p className="episode-title">{episode.name ?? "Episode title unavailable"}</p>{released && <time dateTime={released.toISOString()} title={released.toLocaleString()}>{formatDistanceToNow(released, { addSuffix: true })} · {released.toLocaleDateString()}</time>}</div></a>
+    <section className="watch-grid" aria-label="Episodes waiting">{items.map(({ show, episode, additional }) => { const provider = providerFor(tracker.domain!, show), poster = posterUrls(provider), released = episodeReleaseInstant(episode, tracker.domain!.settings.timezone, tracker.domain!.settings.dateOnlyReleaseHour), recent = released && differenceInCalendarDays(tracker.now, released) <= 90; return <article className={`watch-card ${completing.has(show.id) ? "completing" : ""}`} key={show.id}>
+      <div className="card-link"><Poster title={show.titleSnapshot} {...poster}/><div className="card-copy"><CardTitle show={show} provider={provider} titleHref={`#/show/${show.id}`}/><div className="episode-code">{episodeCode(episode)} {additional > 0 && <span>+{additional} more</span>}</div><p className="episode-title">{episode.name ?? "Episode title unavailable"}</p>{recent && <time dateTime={released.toISOString()} title={released.toLocaleDateString()}>{formatDistanceToNow(released, { addSuffix: true })}</time>}</div></div>
+      <a className="card-overlay-link" href={`#/show/${show.id}/episode/${episode.id}`} aria-label={`Open ${show.titleSnapshot} episode details: ${episode.name ?? episodeCode(episode)}`}/>
       <button className="watched" disabled={completing.has(show.id)} aria-label={`Mark ${episode.name ?? episodeCode(episode)} watched`} onClick={() => void mark(show.id, () => tracker.markEpisode(show, episode.id, true))}><span aria-hidden="true">✓</span></button>
     </article>; })}</section><TvMazeAttribution/>
     <details className="history"><summary>Watched history <span>{tracker.local?.history.length ?? 0}</span></summary>{!tracker.local?.history.length && <p className="history-empty">Episodes you mark watched will appear here with their season, episode, and title.</p>}{tracker.local?.history.slice(0, 20).map((action) => <article className="history-entry" key={action.id}><div className="history-mark" aria-hidden="true">✓</div><div className="history-copy"><strong>{tracker.local?.shows.find((show) => show.id === action.showId)?.titleSnapshot ?? "Removed show"}</strong><span>{historyDescription(action, tracker)}</span></div><time dateTime={action.occurredAt}>{formatAddedDate(action.occurredAt)}</time><AsyncButton busyLabel="Undoing…" onAction={() => tracker.undo(action)}>Undo</AsyncButton></article>)}</details></>;
@@ -184,8 +171,10 @@ export function Library({ tracker }: { tracker: Tracker }) {
       return order || titleOrder(a, b);
     });
   const isFiltered = search.trim().length > 0 || filter !== "all";
-  return <><PageHeading title="Library" description="Search and manage every show stored in your tracker." count={allShows.length} countLabel="Total shows" {...(isFiltered ? { countDetail: `${shows.length} shown` } : {})}/><div className="library-tools"><div className="library-primary-tools"><label className="search"><span className="sr-only">Search library</span><span aria-hidden="true">⌕</span><input placeholder="Search shows" value={search} onChange={(event) => setSearch(event.target.value)}/></label><label className="library-sort"><span>Sort by</span><select value={sort} onChange={(event) => setSort(event.target.value as LibrarySort)}>{SORTS.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label></div><div className="filter-tabs" role="group" aria-label="Filter library">{FILTERS.map(([value, label]) => <button className={filter === value ? "active" : ""} aria-pressed={filter === value} key={value} onClick={() => setFilter(value)}>{label}</button>)}</div></div>
-    {!shows.length && <Empty title="No matching shows">Try another search or filter.</Empty>}<section className="library-grid" aria-label="Tracked shows">{shows.map((show) => { const summary = summaries.get(show.id)!, poster = posterUrls(summary.provider); return <a className="show-card" href={`#/show/${show.id}`} key={show.id}><Poster title={show.titleSnapshot} {...poster}/><div className="show-card-copy"><CardTitle show={show} provider={summary.provider} showRatings/><div className="badges"><span className="badge accent">{stateLabel(show.userState)}</span><span className="badge">TVMaze</span>{summary.provider?.status && <span className="badge">{stateLabel(summary.provider.status)}</span>}</div><p className="progress-count"><strong>{summary.watched} / {summary.available}</strong> available watched</p>{summary.nextAired ? <p>Next: {episodeCode(summary.nextAired)} · {summary.nextAired.name ?? "Untitled"}</p> : <p>No aired episode waiting</p>}{summary.nextFuture && <p className="muted">Upcoming: {episodeCode(summary.nextFuture)} · {summary.nextFuture.airdate ?? "TBA"}</p>}</div></a>; })}</section><TvMazeAttribution/></>;
+  const [addShowOpen, setAddShowOpen] = useState(false);
+  return <><PageHeading title="Library" description="Search and manage every show stored in your tracker." count={allShows.length} countLabel="Total shows" {...(isFiltered ? { countDetail: `${shows.length} shown` } : {})}/><div className="library-tools"><div className="library-primary-tools"><label className="search"><span className="sr-only">Search library</span><span aria-hidden="true">⌕</span><input placeholder="Search shows" value={search} onChange={(event) => setSearch(event.target.value)}/></label><button type="button" className="primary" onClick={() => setAddShowOpen(true)}>+ Add show</button><label className="library-sort"><span>Sort by</span><select value={sort} onChange={(event) => setSort(event.target.value as LibrarySort)}>{SORTS.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label></div><div className="filter-tabs" role="group" aria-label="Filter library">{FILTERS.map(([value, label]) => <button className={filter === value ? "active" : ""} aria-pressed={filter === value} key={value} onClick={() => setFilter(value)}>{label}</button>)}</div></div>
+    {!shows.length && <Empty title="No matching shows">Try another search or filter.</Empty>}<section className="library-grid" aria-label="Tracked shows">{shows.map((show) => { const summary = summaries.get(show.id)!, poster = posterUrls(summary.provider); return <a className="show-card" href={`#/show/${show.id}`} key={show.id}><Poster title={show.titleSnapshot} {...poster}/><div className="show-card-copy"><CardTitle show={show} provider={summary.provider} showRatings/><div className="badges"><span className="badge accent">{stateLabel(show.userState)}</span><span className="badge">TVMaze</span>{summary.provider?.status && <span className="badge">{stateLabel(summary.provider.status)}</span>}</div><p className="progress-count"><strong>{summary.watched} / {summary.available}</strong> available watched</p>{summary.nextAired ? <p>Next: {episodeCode(summary.nextAired)} · {summary.nextAired.name ?? "Untitled"}</p> : <p>No aired episode waiting</p>}{summary.nextFuture && <p className="muted">Upcoming: {episodeCode(summary.nextFuture)} · {summary.nextFuture.airdate ?? "TBA"}</p>}</div></a>; })}</section><TvMazeAttribution/>
+    {addShowOpen && <AddShowModal tracker={tracker} onClose={() => setAddShowOpen(false)}/>}</>;
 }
 
 export function ShowDetail({ tracker }: { tracker: Tracker }) {
@@ -238,10 +227,11 @@ export function ShowDetail({ tracker }: { tracker: Tracker }) {
   return <>
     <BackLink fallback="/library"/>
     <section className="show-hero"><div className="hero-poster"><Poster title={show.titleSnapshot} {...poster} size="detail"/>{imdbId && <a className="imdb-poster-link" href={`https://www.imdb.com/title/${encodeURIComponent(imdbId)}/`} target="_blank" rel="noreferrer" aria-label={`Open ${show.titleSnapshot} on IMDb`} title="Open on IMDb"><span aria-hidden="true">↗</span></a>}</div><div className="hero-copy"><p className="eyebrow">Show details</p><h1>{show.titleSnapshot}</h1><div className="badges"><span className="badge accent">{stateLabel(show.userState)}</span><span className="badge">{stateLabel(provider?.status ?? "metadata unavailable")}</span></div>
-      {(yearRange || provider?.rating != null || show.tvTimeRating != null || provider?.runtimeMinutes || platform) && <dl className="show-facts" aria-label="Show information">
+      {(yearRange || provider?.rating != null || show.tvTimeRating != null || show.imdbRating != null || provider?.runtimeMinutes || platform) && <dl className="show-facts" aria-label="Show information">
         {yearRange && <div><dt>Years</dt><dd>{yearRange}</dd></div>}
         {provider?.rating != null && <div><dt>TVMaze rating</dt><dd><span aria-hidden="true">★</span> {provider.rating.toFixed(1)} / 10</dd></div>}
         {show.tvTimeRating != null && <div><dt>TV Time rating</dt><dd><span aria-hidden="true">★</span> {show.tvTimeRating.toFixed(1)} / 5</dd></div>}
+        {show.imdbRating != null && <div><dt>Your IMDb rating</dt><dd><span aria-hidden="true">★</span> {show.imdbRating.toFixed(1)} / 10</dd></div>}
         {provider?.runtimeMinutes && <div><dt>Episode length</dt><dd>{provider.runtimeMinutes} min</dd></div>}
         {platform && <div><dt>{provider?.webChannelName ? "Streaming on" : "Network"}</dt><dd>{platform}</dd></div>}
       </dl>}
@@ -338,21 +328,14 @@ export function SettingsPage({ tracker }: { tracker: Tracker }) {
   const hasValidSyncFailureDate = syncFailureDate && !Number.isNaN(syncFailureDate.getTime());
   const syncRetryDate = syncFailure?.retryAt ? new Date(syncFailure.retryAt) : undefined;
   const hasValidSyncRetryDate = syncRetryDate && !Number.isNaN(syncRetryDate.getTime());
-  const [pendingBackup, setPendingBackup] = useState<TrackerBackup>();
-  const [restoreMessage, setRestoreMessage] = useState<{ kind: "error" | "success"; text: string }>();
+  const backupRestore = useBackupRestore(tracker);
   function download() { if (!tracker.local) return; const blob = new Blob([JSON.stringify(createBackup(tracker.local), null, 2)], { type: "application/json" }), url = URL.createObjectURL(blob), link = document.createElement("a"); link.href = url; link.download = `imdb-shows-tracker-${new Date().toISOString().slice(0, 10)}.json`; link.click(); URL.revokeObjectURL(url); }
   async function inspectRestore(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]; event.target.value = ""; if (!file) return;
-    try { setPendingBackup(parseBackup(await file.text())); setRestoreMessage(undefined); }
-    catch { setPendingBackup(undefined); setRestoreMessage({ kind: "error", text: "This is not a valid Tracker backup, or it was created by an unsupported version." }); }
+    const file = event.target.files?.[0]; event.target.value = ""; if (file) await backupRestore.inspectFile(file);
   }
-  async function applyRestore() {
-    if (!pendingBackup || !window.confirm(`Replace the current ${tracker.local?.shows.length ?? 0} shows with ${pendingBackup.state.shows.length} shows from this backup?`)) return;
-    try { await writeLocalState(pendingBackup.state); }
-    catch { setRestoreMessage({ kind: "error", text: "Restore failed before the replacement could be saved." }); return; }
-    setPendingBackup(undefined);
-    try { await tracker.reload(); await chrome.runtime.sendMessage({ type: "SYNC_NOW" }); await tracker.reload(); setRestoreMessage({ kind: "success", text: "Backup restored and TVMaze metadata refreshed." }); }
-    catch { setRestoreMessage({ kind: "success", text: "Backup restored. Metadata refresh failed, so use Check for updates when you are online." }); }
+  async function toggleNotifications(enabled: boolean) {
+    await updateLocalState((state) => ({ ...state, settings: { ...state.settings, notifications: enabled } }));
+    await tracker.reload();
   }
   async function redownloadMetadata() {
     if (!window.confirm(`Re-download show and episode metadata for ${showCount} tracked show${showCount === 1 ? "" : "s"}? This is normally unnecessary and may take a while.`)) return;
@@ -363,6 +346,8 @@ export function SettingsPage({ tracker }: { tracker: Tracker }) {
     if (!window.confirm(`Delete all data for ${count} tracked show${count === 1 ? "" : "s"}? This permanently removes the library, episode progress, watched history, import state, settings, and cached metadata.`)) return;
     await writeLocalState(emptyLocalState());
     await clearTrackerDatabase();
+    resetImportStore();
+    resetBackupRestoreStore();
     await tracker.reload();
     try { await chrome.runtime.sendMessage({ type: "SYNC_NOW" }); } catch { /* Data is already cleared; badge refresh can retry later. */ }
     navigate("/import");
@@ -374,9 +359,19 @@ export function SettingsPage({ tracker }: { tracker: Tracker }) {
       <div className={syncFailure ? "failed" : ""}><dt>Status</dt><dd>{syncFailure ? "Needs retry" : hasValidLastSync ? "Up to date" : "Waiting for first check"}</dd></div>
     </dl>
     {syncFailure && <div className="update-warning" role="status"><strong>Automatic update failed{hasValidSyncFailureDate && <> <time dateTime={syncFailure.failedAt}>{formatInTimeZone(syncFailureDate, tracker.local!.settings.timezone, "PP · p")}</time></>}.</strong><p>{syncFailure.message} {hasValidSyncRetryDate ? <>The extension will retry <time dateTime={syncFailure.retryAt}>{formatInTimeZone(syncRetryDate, tracker.local!.settings.timezone, "PP · p")}</time>.</> : "The extension will try again during the next daily check."}</p></div>}
-    <div className="show-actions"><AsyncButton busy={tracker.metadataAction === "refresh"} disabled={tracker.metadataAction !== undefined} busyLabel="Checking for updates…" successLabel="Updates checked" onAction={() => tracker.refreshMetadata()}>Check for updates</AsyncButton></div>{tracker.metadataError && <p className="error" role="alert">{tracker.metadataError}</p>}<p className="settings-help">Manual checks are optional. Use this when you want TVMaze changes before the next automatic check.</p><details className="settings-troubleshooting"><summary>Troubleshooting</summary><p>Re-download all metadata only to repair missing or incorrect show information. It clears the provider request cache and leaves your library and watch progress untouched.</p><AsyncButton busy={tracker.metadataAction === "redownload"} disabled={tracker.metadataAction !== undefined} busyLabel={`Downloading ${showCount} shows…`} onAction={redownloadMetadata}>Re-download all metadata</AsyncButton></details></section><section className="settings"><h2>Backup and restore</h2><p>Backups contain your library, progress, history, and settings. Provider images and episode metadata are refreshed after restore.</p><button onClick={download}>Export JSON backup</button><label className="file-button">Choose backup to restore<input hidden type="file" accept="application/json,.json" onChange={(event) => void inspectRestore(event)}/></label>
-    {pendingBackup && <div className="restore-preview"><h3>Review backup before replacing local data</h3><dl><div><dt>Exported</dt><dd>{new Date(pendingBackup.exportedAt).toLocaleString()}</dd></div><div><dt>Shows</dt><dd>{pendingBackup.state.shows.length}</dd></div><div><dt>Progress records</dt><dd>{pendingBackup.state.progress.length}</dd></div><div><dt>History actions</dt><dd>{pendingBackup.state.history.length}</dd></div></dl><p>This replaces the current local tracker state. It does not merge the two libraries.</p><div className="show-actions"><button onClick={() => setPendingBackup(undefined)}>Cancel</button><AsyncButton className="danger" busyLabel="Replacing…" onAction={applyRestore}>Replace local data</AsyncButton></div></div>}
-    {restoreMessage && <p className={restoreMessage.kind === "error" ? "error" : "success-message"} role="status">{restoreMessage.text}</p>}</section><section className="settings danger-zone"><p className="eyebrow">Danger zone</p><h2>Start over</h2><p>Remove the entire local tracker and return to an empty Library. Export a backup first if you may want this data again.</p><AsyncButton className="danger" busyLabel="Removing all data…" onAction={removeAllData}>Remove all data</AsyncButton></section><section className="settings"><h2>About</h2><p><strong>TV Show Tracker is an independent extension.</strong> It is not affiliated with, endorsed by, or sponsored by IMDb or TV Time.</p><p><a href="https://www.tvmaze.com/api" target="_blank" rel="noreferrer">Metadata and images provided by TVMaze under CC BY-SA.</a></p></section></>;
+    <div className="show-actions"><AsyncButton busy={tracker.metadataAction === "refresh"} disabled={tracker.metadataAction !== undefined} busyLabel="Checking for updates…" successLabel="Updates checked" onAction={() => tracker.refreshMetadata()}>Check for updates</AsyncButton></div>{tracker.metadataError && <p className="error" role="alert">{tracker.metadataError}</p>}<p className="settings-help">Manual checks are optional. Use this when you want TVMaze changes before the next automatic check.</p><details className="settings-troubleshooting"><summary>Troubleshooting</summary><p>Re-download all metadata only to repair missing or incorrect show information. It clears the provider request cache and leaves your library and watch progress untouched.</p><AsyncButton busy={tracker.metadataAction === "redownload"} disabled={tracker.metadataAction !== undefined} busyLabel={`Downloading ${showCount} shows…`} onAction={redownloadMetadata}>Re-download all metadata</AsyncButton></details></section><section className="settings"><p className="eyebrow">TV information</p><h2>Notifications</h2><p>Get a browser notification when a new episode of a show you are watching becomes available.</p><label className="checkbox-row"><input type="checkbox" checked={tracker.local?.settings.notifications ?? true} onChange={(event) => void toggleNotifications(event.target.checked)}/>Notify me about new episodes</label></section><section className="settings"><h2>Backup and restore</h2><p>Backups contain your library, progress, history, and settings. Provider images and episode metadata are refreshed after restore.</p><button onClick={download}>Export JSON backup</button><label className="file-button">Choose backup to restore<input hidden type="file" accept="application/json,.json" onChange={(event) => void inspectRestore(event)}/></label>
+    {backupRestore.pendingBackup && <RestorePreview backup={backupRestore.pendingBackup} onCancel={backupRestore.cancel} onConfirm={backupRestore.applyRestore}/>}
+    {backupRestore.syncProgress ? <SyncProgress progress={backupRestore.syncProgress}/> : backupRestore.restoreMessage && <p className={backupRestore.restoreMessage.kind === "error" ? "error" : "success-message"} role="status">{backupRestore.restoreMessage.text}</p>}</section><section className="settings danger-zone"><p className="eyebrow">Danger zone</p><h2>Start over</h2><p>Remove the entire local tracker and return to an empty Library. Export a backup first if you may want this data again.</p><AsyncButton className="danger" busyLabel="Removing all data…" onAction={removeAllData}>Remove all data</AsyncButton></section><section className="settings"><h2>About</h2><p><strong>TV Show Tracker is an independent extension.</strong> It is not affiliated with, endorsed by, or sponsored by IMDb or TV Time.</p><p><a href="https://www.tvmaze.com/api" target="_blank" rel="noreferrer">Metadata and images provided by TVMaze under CC BY-SA.</a></p></section></>;
 }
 
-export function App() { const tracker = useTracker(), location = useLocation(); if (tracker.error) return <main><section className="error-state" role="alert"><h1>{navigator.onLine ? "Tracker couldn’t load" : "You’re offline"}</h1><p>{navigator.onLine ? tracker.error : "Local progress remains safe. Reconnect to refresh TVMaze metadata, then retry."}</p><AsyncButton busyLabel="Retrying…" onAction={tracker.reload}>Retry</AsyncButton></section></main>; if (!tracker.local || !tracker.domain) return <main><div className="loading-state" role="status"><span className="spinner"/><p>Loading your tracker…</p></div></main>; const hasShows = tracker.local.shows.length > 0; return <Layout status={tracker.status}><RouteScrollReset/><div className="route-stage" key={location.pathname}><Routes location={location}><Route path="/watch-list" element={hasShows ? <WatchList tracker={tracker}/> : <Navigate to="/import" replace/>}/><Route path="/upcoming" element={<Upcoming tracker={tracker}/>}/><Route path="/library" element={<Library tracker={tracker}/>}/><Route path="/show/:id" element={<ShowDetail tracker={tracker}/>}/><Route path="/show/:id/episode/:episodeId" element={<EpisodeDetail tracker={tracker}/>}/><Route path="/import" element={<ImportPage tracker={tracker}/>}/><Route path="/settings" element={<SettingsPage tracker={tracker}/>}/><Route path="*" element={<Navigate to={hasShows ? "/watch-list" : "/import"} replace/>}/></Routes></div></Layout>; }
+class RouteErrorBoundary extends Component<{ children: React.ReactNode }, { error?: Error }> {
+  state: { error?: Error } = {};
+  static getDerivedStateFromError(error: Error) { return { error }; }
+  componentDidCatch(error: Error, info: React.ErrorInfo) { console.error("[TV Show Tracker] Unexpected UI error", error, info); }
+  render() {
+    if (this.state.error) return <main><section className="error-state" role="alert"><h1>Something went wrong</h1><p>{this.state.error.message || "This page couldn’t be displayed."}</p><button onClick={() => window.location.reload()}>Reload</button></section></main>;
+    return this.props.children;
+  }
+}
+
+export function App() { const tracker = useTracker(), location = useLocation(); if (tracker.error) return <main><section className="error-state" role="alert"><h1>{navigator.onLine ? "Tracker couldn’t load" : "You’re offline"}</h1><p>{navigator.onLine ? tracker.error : "Local progress remains safe. Reconnect to refresh TVMaze metadata, then retry."}</p><AsyncButton busyLabel="Retrying…" onAction={tracker.reload}>Retry</AsyncButton></section></main>; if (!tracker.local || !tracker.domain) return <main><div className="loading-state" role="status"><span className="spinner"/><p>Loading your tracker…</p></div></main>; const hasShows = tracker.local.shows.length > 0; return <Layout status={tracker.status}><RouteErrorBoundary><RouteScrollReset/><div className="route-stage" key={location.pathname}><Routes location={location}><Route path="/watch-list" element={hasShows ? <WatchList tracker={tracker}/> : <Navigate to="/import" replace/>}/><Route path="/upcoming" element={<Upcoming tracker={tracker}/>}/><Route path="/library" element={<Library tracker={tracker}/>}/><Route path="/show/:id" element={<ShowDetail tracker={tracker}/>}/><Route path="/show/:id/episode/:episodeId" element={<EpisodeDetail tracker={tracker}/>}/><Route path="/import" element={<ImportPage tracker={tracker}/>}/><Route path="/settings" element={<SettingsPage tracker={tracker}/>}/><Route path="*" element={<Navigate to={hasShows ? "/watch-list" : "/import"} replace/>}/></Routes></div></RouteErrorBoundary></Layout>; }

@@ -72,6 +72,22 @@ describe("TVMaze request client", () => {
     expect(sleep).toHaveBeenCalledWith(5_000);
   });
 
+  it("aborts a hung request instead of waiting forever, surfacing it as a network error", async () => {
+    const fetchFn = vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+    })) as TvMazeFetch;
+    const request = createTvMazeRequest({
+      fetchFn,
+      sleep: async () => undefined,
+      maxAttempts: 1,
+      minStartIntervalMs: 0,
+      requestTimeoutMs: 1,
+      random: () => 0,
+    });
+
+    await expect(request("/hangs")).rejects.toMatchObject({ name: "TvMazeRequestError", kind: "network" });
+  });
+
   it("exposes an exhausted fetch failure as a typed network error", async () => {
     const request = createTvMazeRequest({
       fetchFn: vi.fn(async () => { throw new TypeError("offline"); }) as TvMazeFetch,

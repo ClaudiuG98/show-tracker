@@ -2,7 +2,7 @@ import { requestSchema } from "../src/messaging/messages";
 import { LOCAL_STATE_KEY, readLocalState, updateLocalState } from "../src/storage/local-state";
 import { db } from "../src/storage/database";
 import { TvMazeProvider } from "../src/providers/tvmaze/provider";
-import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, RELEASE_ALARM, ensureSyncAlarms, recomputeBadgeAndReleaseAlarm, runAutomaticSynchronization, synchronize } from "../src/scheduling/sync";
+import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, RELEASE_ALARM, checkReleaseNotifications, ensureSyncAlarms, recomputeBadgeAndReleaseAlarm, runAutomaticSynchronization, synchronize } from "../src/scheduling/sync";
 import { selectWatchListShows } from "../src/domain/selectors";
 
 const dashboardUrl = (route = "/") => chrome.runtime.getURL(`/dashboard.html#${route}`);
@@ -22,7 +22,16 @@ export default defineBackground(() => {
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === DAILY_SYNC_ALARM) safely("Automatic metadata check failed.", runAutomaticSynchronization("daily"));
     else if (alarm.name === METADATA_RETRY_ALARM) safely("Automatic metadata retry failed.", runAutomaticSynchronization("retry"));
-    else if (alarm.name === RELEASE_ALARM) safely("Could not update the release badge.", recomputeBadgeAndReleaseAlarm());
+    else if (alarm.name === RELEASE_ALARM) safely("Could not update the release badge.", (async () => {
+      await checkReleaseNotifications();
+      await recomputeBadgeAndReleaseAlarm();
+    })());
+  });
+  chrome.notifications.onClicked.addListener((notificationId) => {
+    const [kind, showId, episodeId] = notificationId.split(":");
+    if (kind !== "release") return;
+    void chrome.notifications.clear(notificationId);
+    void chrome.tabs.create({ url: dashboardUrl(episodeId ? `/show/${showId}/episode/${episodeId}` : "/watch-list") });
   });
   chrome.runtime.onMessage.addListener((raw, sender, respond) => {
     const parsed = requestSchema.safeParse(raw);
@@ -49,14 +58,6 @@ export default defineBackground(() => {
         await updateLocalState((state) => ({ ...state, shows: [...state.shows, { id, externalIds: provider.externalIds, titleSnapshot: provider.name,
           userState: "watching", userStateSource: "user", userStateUpdatedAt: now, importSources: ["manual"], providerUpdatedAt: provider.updatedAt, createdAt: now, updatedAt: now }] }));
         return { ok: true, showId: id };
-      }
-      if (request.type === "SET_SHOW_STATE" && existing) {
-        await updateLocalState((state) => { const now = new Date().toISOString(); return { ...state, shows: state.shows.map((s) => s.id === existing.id ? { ...s, userState: request.state, userStateSource: "user" as const, userStateUpdatedAt: now, updatedAt: now } : s) }; });
-        return { ok: true };
-      }
-      if (request.type === "REMOVE_SHOW" && existing) {
-        await updateLocalState((state) => ({ ...state, shows: state.shows.filter((s) => s.id !== existing.id), progress: state.progress.filter((p) => p.localShowId !== existing.id) }));
-        return { ok: true };
       }
       return { ok: false, error: "Show is not tracked." };
     })().then(async (result) => { await recomputeBadgeAndReleaseAlarm(); respond(result); }).catch((error: unknown) => respond({ ok: false, error: error instanceof Error ? error.message : "Unexpected error" }));
