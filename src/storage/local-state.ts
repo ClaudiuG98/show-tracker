@@ -22,7 +22,7 @@ const progressSchema = z.object({ localShowId: z.string(), tvmazeEpisodeId: z.nu
   season: z.number().int().nonnegative(), episode: z.number().int().positive(), watched: z.boolean(), watchedAt: z.string().datetime().optional(),
   source: z.enum(["tvtime", "user", "assumption", "restore", "backfill"]), rewatchCount: z.number().int().nonnegative().optional() });
 const snapshotSchema = z.object({ episodes: z.array(progressSchema), userState: userStateSchema });
-const showSchema = z.object({ id: z.string(), externalIds: externalIdsSchema, titleSnapshot: z.string(), imdbAddedAt: z.string().optional(), tvTimeAddedAt: z.string().optional(),
+const showSchema = z.object({ id: z.string(), externalIds: externalIdsSchema, titleSnapshot: z.string(), sourceTitle: z.string().optional(), imdbAddedAt: z.string().optional(), tvTimeAddedAt: z.string().optional(),
   tvTimeRating: z.number().min(1).max(5).optional(), imdbRating: z.number().min(1).max(10).optional(), userState: userStateSchema,
   userStateSource: z.enum(["import", "user"]).optional(), userStateUpdatedAt: z.string().optional(), importSources: z.array(z.enum(["imdb", "tvtime", "manual"])),
   providerUpdatedAt: z.number().optional(), progressUpdatedAt: z.string().optional(), createdAt: z.string(), updatedAt: z.string() });

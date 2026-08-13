@@ -266,6 +266,20 @@ describe("staged import analysis and commit", () => {
     expect(stored?.shows[0]).toMatchObject({ userState: "caught_up" });
   });
 
+  it("reports the shows written, not the source records behind them", async () => {
+    // One show described by both an IMDb row and a TV Time record is still one show.
+    const analysis = await analyzeImport({ selected: selected(), provider: new FakeProvider(), settings, now });
+    expect(analysis.records).toHaveLength(1);
+
+    const local = { ...emptyLocalState(), settings };
+    stored = local;
+    const decisions = emptyImportDecisions();
+    const result = await commitImport(analysis, buildImportPreview(analysis, decisions, local), decisions);
+
+    expect(result).toMatchObject({ committed: 1, newShows: 1, updatedShows: 0 });
+    expect(stored?.shows).toHaveLength(1);
+  });
+
   it("does not erase prior TV Time history during an IMDb-only reimport", async () => {
     const analysis = await analyzeImport({ selected: selected([imdbRow()], []), provider: new FakeProvider(), settings, now });
     const local: LocalState = {

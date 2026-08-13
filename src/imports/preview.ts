@@ -40,6 +40,7 @@ export interface ImportShowPlan {
   provider: ProviderShow;
   episodes: ProviderEpisode[];
   title: string;
+  sourceTitle?: string;
   imdbId?: string;
   imdbAddedAt?: string;
   tvTimeAddedAt?: string;
@@ -123,6 +124,13 @@ function tvTimeState(record: ImportShowRecord, analysis: ImportAnalysis, local: 
   return "caught_up";
 }
 
+/** The name the export knew the show by, kept only when it is not the provider's own name. */
+function sourceTitle(record: ImportShowRecord) {
+  const source = record.imdb?.title ?? record.tvtime?.title;
+  const canonical = record.provider?.name;
+  return source && canonical && source.trim() !== canonical.trim() ? source.trim() : undefined;
+}
+
 function createPlan(
   record: ImportShowRecord,
   desiredState: UserShowState,
@@ -133,6 +141,7 @@ function createPlan(
     provider: record.provider!,
     episodes: record.episodes,
     title: record.provider?.name ?? record.imdb?.title ?? record.tvtime?.title ?? record.id,
+    ...(sourceTitle(record) ? { sourceTitle: sourceTitle(record)! } : {}),
     ...(record.imdb?.imdbId ? { imdbId: record.imdb.imdbId } : {}),
     ...(record.imdb?.created ? { imdbAddedAt: record.imdb.created } : {}),
     ...(record.tvtime?.createdAt ? { tvTimeAddedAt: record.tvtime.createdAt } : {}),

@@ -113,6 +113,7 @@ function normalizeEpisodes(raw: unknown, showId: number): ProviderEpisode[] {
   }
 }
 
+const showCacheKey = (id: number) => `tvmaze:v1:show:${id}`;
 const imdbCacheKey = (id: string) => `tvmaze:v1:lookup:imdb:${id}`;
 const tvdbCacheKey = (id: number) => `tvmaze:v1:lookup:tvdb:${id}`;
 const episodesCacheKey = (showId: number) => `tvmaze:v1:episodes:${showId}`;
@@ -168,8 +169,15 @@ export class TvMazeProvider implements TelevisionProvider {
     }
   }
 
+  /**
+   * Files one fetched show under every identifier it can be asked for by.
+   *
+   * An import reaches the same show from several directions -- a title search for a Refract row,
+   * an IMDb id from a list, a TVDB id from TV Time, then a plain fetch by TVMaze id. Each of
+   * those was a separate request even though the first response already contained the answer.
+   */
   private async cacheExactShow(requestedKey: string, raw: unknown, show: ProviderShow) {
-    const keys = new Set([requestedKey]);
+    const keys = new Set([requestedKey, showCacheKey(show.id)]);
     if (show.externalIds.imdb) keys.add(imdbCacheKey(show.externalIds.imdb));
     if (show.externalIds.tvdbShow) keys.add(tvdbCacheKey(show.externalIds.tvdbShow));
     await Promise.all([...keys].map((key) => this.writeCache(key, raw, TVMAZE_CACHE_TTL.exactLookupMs)));
@@ -194,8 +202,7 @@ export class TvMazeProvider implements TelevisionProvider {
   }
 
   async getShow(id: number) {
-    const raw = await this.request(`/shows/${id}`);
-    return raw ? normalizeShow(raw) : null;
+    return this.exactLookup(`/shows/${id}`, showCacheKey(id));
   }
 
   async getEpisodes(showId: number): Promise<ProviderEpisode[]> {
@@ -245,7 +252,14 @@ export class TvMazeProvider implements TelevisionProvider {
     if (!Array.isArray(raw)) return [];
     const results: ProviderShow[] = [];
     for (const item of raw) {
-      try { results.push(normalizeShow(tvMazeSearchResultSchema.parse(item).show)); } catch { /* skip malformed search entries */ }
+      try {
+        const payload = tvMazeSearchResultSchema.parse(item).show;
+        const show = normalizeShow(payload);
+        results.push(show);
+        await this.cacheExactShow(showCacheKey(show.id), payload, show);
+      // The result is kept before caching, so a cache write failure costs a later request
+      // rather than a search hit. Malformed entries are simply skipped.
+      } catch { /* ignore */ }
     }
     return results;
   }

@@ -170,35 +170,52 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
     + tvTimeShows.filter((show) => show.providerShowId !== undefined).length
     + [...tvTimeImdbIds].filter((id) => !selected.imdbRows.some((row) => row.imdbId === id)).length;
   let lookupDone = 0;
-  onProgress?.({ stage: "resolve_ids", completed: 0, total: lookupTotal, message: "Resolving exact IMDb and TVDB identifiers." });
+  // Two sources name the same show by different identifiers (an IMDb tt-id and a TVDB number),
+  // so the number of records looked up runs well ahead of the number of shows they resolve to.
+  // Report the shows found, and keep the record count only as the progress denominator.
+  const resolvedShowIds = new Set<number>();
+  const lookupTick = (show?: ProviderShow | null) => {
+    if (show) resolvedShowIds.add(show.id);
+    onProgress?.({ stage: "resolve_ids", completed: ++lookupDone, total: lookupTotal,
+      message: `Matched ${resolvedShowIds.size} show${resolvedShowIds.size === 1 ? "" : "s"} from ${lookupDone} of ${lookupTotal} records.` });
+  };
+  onProgress?.({ stage: "resolve_ids", completed: 0, total: lookupTotal, message: "Matching records to TVMaze." });
 
   await Promise.all(selected.imdbRows.map(async (row) => {
     try {
-      imdbResults.set(row.imdbId, await provider.lookupByImdbId(row.imdbId));
+      const found = await provider.lookupByImdbId(row.imdbId);
+      imdbResults.set(row.imdbId, found);
+      lookupTick(found);
+      return;
     } catch (error) {
       errors.push(providerError(error, "imdb_lookup_failed", "resolve_ids", row.title));
-    } finally {
-      onProgress?.({ stage: "resolve_ids", completed: ++lookupDone, total: lookupTotal, message: `Resolved ${lookupDone} of ${lookupTotal} identifiers.` });
     }
+    lookupTick();
   }));
 
   await Promise.all(tvTimeShows.flatMap((show) => show.tvdbShowId === undefined || show.providerShowId !== undefined ? [] : [
     (async () => {
       try {
-        tvdbResults.set(show.tvdbShowId!, await provider.lookupByTvdbId(show.tvdbShowId!));
+        const found = await provider.lookupByTvdbId(show.tvdbShowId!);
+        tvdbResults.set(show.tvdbShowId!, found);
+        lookupTick(found);
+        return;
       } catch (error) {
         errors.push(providerError(error, "tvdb_lookup_failed", "resolve_ids", show.title));
-      } finally {
-        onProgress?.({ stage: "resolve_ids", completed: ++lookupDone, total: lookupTotal, message: `Resolved ${lookupDone} of ${lookupTotal} identifiers.` });
       }
+      lookupTick();
     })(),
   ]));
 
   await Promise.all(tvTimeShows.flatMap((show) => show.providerShowId === undefined ? [] : [
     (async () => {
-      try { directTvmazeResults.set(show.uuid, await provider.getShow(show.providerShowId!)); }
-      catch (error) { errors.push(providerError(error, "provider_network_failed", "resolve_ids", show.title)); }
-      finally { onProgress?.({ stage: "resolve_ids", completed: ++lookupDone, total: lookupTotal, message: `Resolved ${lookupDone} of ${lookupTotal} identifiers.` }); }
+      try {
+        const found = await provider.getShow(show.providerShowId!);
+        directTvmazeResults.set(show.uuid, found);
+        lookupTick(found);
+        return;
+      } catch (error) { errors.push(providerError(error, "provider_network_failed", "resolve_ids", show.title)); }
+      lookupTick();
     })(),
   ]));
 
@@ -206,12 +223,14 @@ export async function analyzeImport(options: AnalyzeImportOptions): Promise<Impo
     (async () => {
       const show = tvTimeShows.find((candidate) => candidate.imdbId === id);
       try {
-        tvtimeImdbResults.set(id, await provider.lookupByImdbId(id));
+        const found = await provider.lookupByImdbId(id);
+        tvtimeImdbResults.set(id, found);
+        lookupTick(found);
+        return;
       } catch (error) {
         errors.push(providerError(error, "imdb_lookup_failed", "resolve_ids", show?.title ?? id));
-      } finally {
-        onProgress?.({ stage: "resolve_ids", completed: ++lookupDone, total: lookupTotal, message: `Resolved ${lookupDone} of ${lookupTotal} identifiers.` });
       }
+      lookupTick();
     })(),
   ]));
   for (const id of tvTimeImdbIds) {

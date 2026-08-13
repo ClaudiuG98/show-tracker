@@ -248,7 +248,7 @@ function FinalPreviewView({ preview, decisions, updateDecisions }: {
 }
 
 export function ImportPage({ tracker }: { tracker: Tracker }) {
-  const { phase, selectedFiles, analysis, decisions, preview, stageProgress, error, commitResult } = useImportStore();
+  const { phase, tvtime, refract, selectedFiles, analysis, decisions, preview, stageProgress, error, commitResult } = useImportStore();
   const backupRestore = useBackupRestore(tracker);
   const setPhase = (value: Phase) => useImportStore.setState({ phase: value });
   const setDecisions = (value: ImportDecisions) => useImportStore.setState({ decisions: value });
@@ -330,7 +330,10 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
       }
       if (currentOperation !== useImportStore.getState().operationId) return;
       useImportStore.setState({ imdb: nextImdb, tvtime: nextTvtime, refract: nextRefract, selectedFiles: nextFiles, analysis: undefined, decisions: emptyImportDecisions(), preview: undefined, commitResult: undefined, phase: "parsed", stageProgress: undefined });
-      await runAnalysis();
+      // Two exports that both carry watch history describe the same shows twice, which
+      // reconciliation can only read as a conflict. Stop and say so instead of running an
+      // analysis whose every record needs excluding.
+      if (!(nextTvtime && nextRefract)) await runAnalysis();
     } catch (cause) {
       if (currentOperation !== useImportStore.getState().operationId) return;
       const title = cause instanceof TvTimeImportError
@@ -436,6 +439,12 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
     {backupRestore.syncProgress ? <SyncProgress progress={backupRestore.syncProgress}/> : backupRestore.restoreMessage && <p className={backupRestore.restoreMessage.kind === "error" ? "error" : "success-message"} role="status">{backupRestore.restoreMessage.text}</p>}
     {busy && <>
     {error && <ErrorPanel title={error.title} message={error.message} retry={phase === "report" && analysis?.report.providerErrors.length ? () => void runAnalysis() : phase === "preview" ? () => void commit() : undefined}/>}
+    {phase === "parsed" && tvtime && refract && <section className="report warning-panel" role="alert">
+      <h2>Import these one at a time</h2>
+      <p>Your TV Time and Refract exports both contain watch history, so most shows appear in both. Reconciliation can only treat the same show arriving twice as a conflict, and every one of them would have to be excluded by hand — importing nothing.</p>
+      <p className="muted">Clear one file above and import it on its own, then come back and import the other. Progress from the second import merges into the first.</p>
+      <div className="import-actions"><button type="button" onClick={() => void runAnalysis()}>Import both anyway</button></div>
+    </section>}
     {stageProgress && <section className="report import-progress" aria-live="polite"><p>{stageProgress.message}</p><progress aria-label={stageProgress.message} value={stageProgress.completed} max={Math.max(1, stageProgress.total)}/><div className="import-skeleton" aria-hidden="true"><span/><span/><span/></div></section>}
     {phase === "report" && analysis && analysis.report.providerErrors.length > 0 && <div className="import-actions">
       <button className="primary" type="button" onClick={() => void runAnalysis()}>Retry failed requests</button></div>}

@@ -49,7 +49,11 @@ export function reconcileShows(
     const stableImdbId = show.imdbId ?? directProvider?.externalIds.imdb ?? tvdbProvider?.externalIds.imdb ?? imdbProvider?.externalIds.imdb;
     const linked = (stableImdbId ? byImdbId.get(stableImdbId) : undefined)
       ?? (tvdbProvider ? byProviderId.get(tvdbProvider.id) : undefined)
-      ?? (imdbProvider ? byProviderId.get(imdbProvider.id) : undefined);
+      ?? (imdbProvider ? byProviderId.get(imdbProvider.id) : undefined)
+      // A Refract row carries no external id at all -- only a provider matched by title -- so
+      // without this it can never find the record another source already created for the same
+      // show, and silently becomes a second copy of it.
+      ?? (directProvider ? byProviderId.get(directProvider.id) : undefined);
 
     const exactProvidersDiffer = Boolean(tvdbProvider && imdbProvider && tvdbProvider.id !== imdbProvider.id);
     const resolved = directProvider ?? tvdbProvider ?? imdbProvider;

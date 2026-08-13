@@ -55,11 +55,28 @@ describe("TVMaze provider cache", () => {
     await second.lookupByTvdbId(403245);
     await second.getEpisodes(101);
 
+    // One fetch answers the IMDb id, the TVDB id and the TVMaze id alike.
+    await expect(second.getShow(101)).resolves.toMatchObject({ id: 101 });
+
     expect(request.mock.calls.map(([path]) => path)).toEqual([
       "/lookup/shows?imdb=tt14688458",
       "/shows/101/episodes",
     ]);
-    expect(await db.cache.count()).toBe(3);
+    expect(await db.cache.count()).toBe(4);
+  });
+
+  it("answers a later lookup from a title search instead of fetching again", async () => {
+    const request = vi.fn<TvMazeRequest>(async (path) =>
+      path.startsWith("/search/shows") ? [{ score: 0.9, show: showDto }] : path.endsWith("/episodes") ? episodeDtos : showDto);
+    const provider = new TvMazeProvider({ request, now: () => 1_000 });
+
+    // A Refract row resolves by title; the same show then arrives from an IMDb list and by id.
+    await expect(provider.searchShows("Silo")).resolves.toMatchObject([{ id: 101 }]);
+    await expect(provider.lookupByImdbId("tt14688458")).resolves.toMatchObject({ id: 101 });
+    await expect(provider.lookupByTvdbId(403245)).resolves.toMatchObject({ id: 101 });
+    await expect(provider.getShow(101)).resolves.toMatchObject({ id: 101 });
+
+    expect(request.mock.calls.map(([path]) => path)).toEqual(["/search/shows?q=Silo"]);
   });
 
   it("does not cache a missing exact lookup", async () => {

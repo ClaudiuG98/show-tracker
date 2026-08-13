@@ -83,6 +83,10 @@ export async function commitImport(
 
   const replacements = new Set(decisions.replaceLocalProgressKeys);
   const now = new Date().toISOString();
+  // Counted from the shows actually written rather than from the plans: several source records
+  // can describe one show, and reporting the plan count overstates what landed in the library.
+  const committedShowIds = new Set<string>();
+  const createdShowIds = new Set<string>();
   try {
     await updateLocalState((state) => {
       const shows = [...state.shows];
@@ -99,6 +103,7 @@ export async function commitImport(
             id: crypto.randomUUID(),
             externalIds: { ...plan.provider.externalIds, ...(plan.imdbId ? { imdb: plan.imdbId } : {}) },
             titleSnapshot: plan.title,
+            ...(plan.sourceTitle ? { sourceTitle: plan.sourceTitle } : {}),
             ...(plan.imdbAddedAt ? { imdbAddedAt: plan.imdbAddedAt } : {}),
             ...(plan.tvTimeAddedAt ? { tvTimeAddedAt: plan.tvTimeAddedAt } : {}),
             ...(plan.tvTimeRating !== undefined ? { tvTimeRating: plan.tvTimeRating } : {}),
@@ -113,6 +118,7 @@ export async function commitImport(
             updatedAt: now,
           };
           shows.push(tracked);
+          createdShowIds.add(tracked.id);
         } else {
           const existingTracked = tracked;
           const index = shows.findIndex((show) => show.id === existingTracked.id);
@@ -122,6 +128,7 @@ export async function commitImport(
             ...existingTracked,
             externalIds: { ...existingTracked.externalIds, ...plan.provider.externalIds, ...(plan.imdbId ? { imdb: plan.imdbId } : {}) },
             titleSnapshot: plan.title,
+            ...(plan.sourceTitle ? { sourceTitle: plan.sourceTitle } : {}),
             ...(plan.imdbAddedAt ? { imdbAddedAt: plan.imdbAddedAt } : {}),
             ...(plan.tvTimeAddedAt ? { tvTimeAddedAt: plan.tvTimeAddedAt } : {}),
             ...(plan.tvTimeRating !== undefined ? { tvTimeRating: plan.tvTimeRating } : {}),
@@ -139,6 +146,7 @@ export async function commitImport(
         }
 
         const committedShow = tracked;
+        committedShowIds.add(committedShow.id);
 
         if (!plan.sources.includes("tvtime")) {
           const regularIds = new Set(plan.episodes.filter((episode) => episode.kind === "regular").map((episode) => episode.id));
@@ -180,9 +188,9 @@ export async function commitImport(
   }
 
   return {
-    committed: preview.committedShows,
-    newShows: preview.newShows,
-    updatedShows: preview.updatedShows,
+    committed: committedShowIds.size,
+    newShows: createdShowIds.size,
+    updatedShows: committedShowIds.size - createdShowIds.size,
     watchedMapped: preview.watchedStates,
     explicitUnwatchedMapped: preview.explicitUnwatchedStates,
   };

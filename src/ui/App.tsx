@@ -54,6 +54,46 @@ function formatAddedDate(value: string) {
     : new Intl.DateTimeFormat("en-US", { day: "numeric", month: "short", year: "numeric" }).format(date);
 }
 
+// NFKD splits a letter from its accent, but only where the accent is a combining mark. Letters
+// that are their own character in their alphabet -- the Nordic ae/o-slash/eth, German sharp s,
+// Polish l-stroke -- survive it untouched, so they need spelling out by hand.
+const FOLDED_LETTERS: Record<string, string> = {
+  "æ": "ae", "ø": "o", "ð": "d", "þ": "th", "ß": "ss", "ł": "l", "đ": "d", "ħ": "h",
+  "œ": "oe", "ı": "i", "ŋ": "n", "ĸ": "k", "ſ": "s",
+};
+
+/**
+ * Folds a title down to something typeable on a plain keyboard.
+ *
+ * Shows are stored under the provider's own name, which is frequently the native-language one
+ * ("Şahsiyet", "Ófærð"), so without this the only way to find them is to reproduce the accents.
+ * Non-Latin scripts cannot be folded this way at all -- those are found through `sourceTitle`.
+ */
+function searchable(value: string) {
+  return value.normalize("NFKD").replace(/\p{M}+/gu, "").toLocaleLowerCase("en-US")
+    .replace(/[^\p{ASCII}]/gu, (character) => FOLDED_LETTERS[character] ?? character);
+}
+
+/**
+ * The export's title, but only when it is a genuinely different name rather than the same one
+ * dressed differently -- "Arcane" vs "Arcane: League of Legends", "Yellowstone" vs
+ * "Yellowstone (2018)". Search still matches those; they just aren't worth captioning.
+ */
+function distinctSourceTitle(show: TrackedShow) {
+  if (!show.sourceTitle) return undefined;
+  const bare = (value: string) => searchable(value).replace(/\((?:19|20)\d{2}\)/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  const canonical = bare(show.titleSnapshot), source = bare(show.sourceTitle);
+  if (!canonical || !source || canonical.includes(source) || source.includes(canonical)) return undefined;
+  return show.sourceTitle;
+}
+
+/** Every name a show can be found by: the provider's, and the one the export used. */
+function showMatchesSearch(show: TrackedShow, search: string) {
+  const query = searchable(search.trim());
+  if (!query) return true;
+  return [show.titleSnapshot, show.sourceTitle].some((name) => name && searchable(name).includes(query));
+}
+
 function CardTitle({ show, provider, showRatings = false, titleHref }: { show: TrackedShow; provider: ProviderShow | undefined; showRatings?: boolean; titleHref?: string }) {
   return <div className="card-title"><h2>{titleHref
     ? <a className="card-title-link" href={titleHref} title={`Open ${show.titleSnapshot} show details`}>{show.titleSnapshot}</a>
@@ -160,7 +200,7 @@ export function Library({ tracker }: { tracker: Tracker }) {
     const episode = summaries.get(show.id)?.nextFuture;
     return episode ? episodeReleaseInstant(episode, tracker.domain!.settings.timezone, tracker.domain!.settings.dateOnlyReleaseHour)?.getTime() : undefined;
   };
-  const shows = allShows.filter((show) => { const provider = summaries.get(show.id)?.provider; return show.titleSnapshot.toLowerCase().includes(search.trim().toLowerCase()) && (filter === "all" || filter === "ended" ? filter === "all" || provider?.status === "ended" : show.userState === filter); })
+  const shows = allShows.filter((show) => { const provider = summaries.get(show.id)?.provider; return showMatchesSearch(show, search) && (filter === "all" || filter === "ended" ? filter === "all" || provider?.status === "ended" : show.userState === filter); })
     .sort((a, b) => {
       const order = sort === "recently_added" ? descending(sourceAddedAt(a), sourceAddedAt(b))
         : sort === "recently_watched" ? descending(recentlyWatchedAt(a), recentlyWatchedAt(b))
@@ -226,7 +266,7 @@ export function ShowDetail({ tracker }: { tracker: Tracker }) {
   };
   return <>
     <BackLink fallback="/library"/>
-    <section className="show-hero"><div className="hero-poster"><Poster title={show.titleSnapshot} {...poster} size="detail"/>{imdbId && <a className="imdb-poster-link" href={`https://www.imdb.com/title/${encodeURIComponent(imdbId)}/`} target="_blank" rel="noreferrer" aria-label={`Open ${show.titleSnapshot} on IMDb`} title="Open on IMDb"><span aria-hidden="true">↗</span></a>}</div><div className="hero-copy"><p className="eyebrow">Show details</p><h1>{show.titleSnapshot}</h1><div className="badges"><span className="badge accent">{stateLabel(show.userState)}</span><span className="badge">{stateLabel(provider?.status ?? "metadata unavailable")}</span></div>
+    <section className="show-hero"><div className="hero-poster"><Poster title={show.titleSnapshot} {...poster} size="detail"/>{imdbId && <a className="imdb-poster-link" href={`https://www.imdb.com/title/${encodeURIComponent(imdbId)}/`} target="_blank" rel="noreferrer" aria-label={`Open ${show.titleSnapshot} on IMDb`} title="Open on IMDb"><span aria-hidden="true">↗</span></a>}</div><div className="hero-copy"><p className="eyebrow">Show details</p><h1>{show.titleSnapshot}</h1>{distinctSourceTitle(show) && <p className="source-title">also known as {distinctSourceTitle(show)}</p>}<div className="badges"><span className="badge accent">{stateLabel(show.userState)}</span><span className="badge">{stateLabel(provider?.status ?? "metadata unavailable")}</span></div>
       {(yearRange || provider?.rating != null || show.tvTimeRating != null || show.imdbRating != null || provider?.runtimeMinutes || platform) && <dl className="show-facts" aria-label="Show information">
         {yearRange && <div><dt>Years</dt><dd>{yearRange}</dd></div>}
         {provider?.rating != null && <div><dt>TVMaze rating</dt><dd><span aria-hidden="true">★</span> {provider.rating.toFixed(1)} / 10</dd></div>}

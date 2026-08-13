@@ -65,6 +65,46 @@ describe("dashboard cards", () => {
     fireEvent.click(screen.getByRole("button", { name: "Watching" })); expect(screen.getByText("Silo")).toBeVisible();
   });
 
+  it("finds a renamed show by its accent-free name and the title the export used", () => {
+    // TVMaze files this show under its native name; the user knows it as "Persona".
+    const sahsiyet = { ...show, id: "sahsiyet", externalIds: { tvmazeShow: 14 }, titleSnapshot: "Şahsiyet", sourceTitle: "Persona" };
+    const shows = [show, sahsiyet];
+    const domainWithRename: DomainState = { ...domain, shows,
+      providerShows: [...domain.providerShows, { ...domain.providerShows[0]!, id: 14, name: "Şahsiyet", externalIds: { tvmazeShow: 14 } }] };
+    render(<MemoryRouter><Library tracker={tracker({ domain: domainWithRename, local: { ...tracker().local!, shows, progress: [], settings: domain.settings, history: [] } })}/></MemoryRouter>);
+    const search = screen.getByRole("textbox", { name: "Search library" });
+
+    fireEvent.change(search, { target: { value: "Sahsiyet" } });
+    expect(screen.getByText("Şahsiyet")).toBeVisible();
+    expect(screen.queryByText("Silo")).not.toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: "persona" } });
+    expect(screen.getByText("Şahsiyet")).toBeVisible();
+    // The Library stays uncluttered -- the alias only appears on the show's own page.
+    expect(screen.queryByText(/also known as/)).not.toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: "nothing here" } });
+    expect(screen.queryByText("Şahsiyet")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["Ófærð", "ofaerd"],       // Icelandic eth and ae are letters, not accented vowels
+    ["Ødegård", "odegard"],    // Nordic o-slash
+    ["Straße", "strasse"],     // German sharp s
+    ["Łódź", "lodz"],          // Polish l-stroke
+    ["Élite", "elite"],
+  ])("finds %s by typing %s", (title, query) => {
+    const foreign = { ...show, id: "foreign", externalIds: { tvmazeShow: 15 }, titleSnapshot: title };
+    const shows = [foreign];
+    const foreignDomain: DomainState = { ...domain, shows,
+      providerShows: [{ ...domain.providerShows[0]!, id: 15, name: title, externalIds: { tvmazeShow: 15 } }] };
+    render(<MemoryRouter><Library tracker={tracker({ domain: foreignDomain, local: { ...tracker().local!, shows, progress: [], settings: domain.settings, history: [] } })}/></MemoryRouter>);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Search library" }), { target: { value: query } });
+
+    expect(screen.getByText(title)).toBeVisible();
+  });
+
   it("sorts the Library by source dates, watch activity, release, title, and both ratings", () => {
     const { tvTimeRating: _tvTimeRating, ...unratedShow } = show;
     const shows = [
@@ -218,6 +258,18 @@ describe("route-independent operation status", () => {
     expect(screen.getByText(/The extension will retry/)).toBeVisible();
   });
 
+  it("stops before analysing when two exports both carry watch history", () => {
+    // Both describe the same shows, so reconciliation could only read every one as a conflict.
+    useImportStore.setState({ phase: "parsed",
+      tvtime: { shows: [], specials: 0, specialFlagMismatches: 0, ignoredEntries: [] },
+      refract: { shows: [], episodesByShow: new Map(), malformed: [], unsupported: [], duplicates: [], totalRows: 0 } });
+
+    render(<MemoryRouter><ImportPage tracker={tracker()}/></MemoryRouter>);
+
+    expect(screen.getByRole("heading", { name: "Import these one at a time" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Import both anyway" })).toBeVisible();
+  });
+
   it("keeps the finished import to a one-line result with diagnostics tucked away", () => {
     const unresolved = { show: "Example", tvdbEpisodeId: 999, season: 2, episode: 1, name: "Episode 1", reason: "No compatible episode." };
     const analysis: ImportAnalysis = {
@@ -302,6 +354,20 @@ describe("show seasons", () => {
     expect(mark).toHaveTextContent("✓");
     fireEvent.click(mark);
     await waitFor(() => expect(current.markEpisode).toHaveBeenCalledWith(show, 2, true));
+  });
+
+  it.each([
+    ["Persona", "shows"],                    // a genuinely different name
+    ["Silo (2023)", "hides"],                // same name, trailing year
+    ["Silo: Wool", "hides"],                 // same name, extra words
+  ])("%s: %s the alias on the show page", (sourceTitle, expected) => {
+    const renamed = { ...show, sourceTitle };
+    const current = tracker({ domain: { ...domain, shows: [renamed] },
+      local: { ...tracker().local!, shows: [renamed], progress: [], settings: domain.settings, history: [] } });
+    render(<MemoryRouter initialEntries={["/show/local-1"]}><Routes><Route path="/show/:id" element={<ShowDetail tracker={current}/>}/></Routes></MemoryRouter>);
+
+    if (expected === "shows") expect(screen.getByText(`also known as ${sourceTitle}`)).toBeVisible();
+    else expect(screen.queryByText(/also known as/)).not.toBeInTheDocument();
   });
 
   it("groups episodes, displays original artwork, and protects future episodes from season bulk actions", () => {

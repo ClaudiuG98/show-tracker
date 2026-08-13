@@ -41,6 +41,29 @@ describe("TV Time episode reconciliation", () => {
   });
 });
 
+describe("the same show arriving from two exports", () => {
+  const provider = { provider: "tvmaze" as const, id: 35418, name: "Şahsiyet", status: "ended" as const,
+    externalIds: { tvdbShow: 343271, tvmazeShow: 35418 }, updatedAt: 1 };
+  const refract: TvTimeShow = { uuid: "refract:persona", providerShowId: 35418, title: "Persona",
+    createdAt: "2024-01-01T00:00:00Z", status: "continuing", episodes: [] };
+  const tvtime: TvTimeShow = { uuid: "gdpr-tvdb-343271", tvdbShowId: 343271, title: "Persona",
+    createdAt: "2024-01-01T00:00:00Z", status: "continuing", episodes: [] };
+  const run = (shows: TvTimeShow[]) => reconcileShows([], shows, new Map(), new Map([[343271, provider]]),
+    new Map(), new Map([["refract:persona", provider]]));
+
+  // A Refract row has no external id, so it used to miss the record the other export had
+  // already made and quietly import the show a second time -- but only in this order.
+  it.each([
+    ["Refract first", [refract, tvtime]],
+    ["TV Time first", [tvtime, refract]],
+  ])("is one conflicting record, %s", (_label, shows) => {
+    const records = run([...shows]);
+
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ kind: "conflict" });
+  });
+});
+
 describe("season-layout remapping", () => {
   // Refract holds the same 6 episodes split 3+3; TVMaze splits them 2+4.
   const provider: ProviderEpisode[] = [

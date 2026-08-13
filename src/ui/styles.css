@@ -181,7 +181,11 @@ main { width: min(1500px, 100%); margin: auto; padding: 42px 30px 80px; }
 .error-panel { margin-top: 20px; padding: 18px; border: 1px solid var(--danger-border-strong); border-radius: var(--radius-md); background: var(--danger-bg-strong); color: white; }.error-panel h2 { margin-top: 0; color: var(--danger-text); }
 .error-panel.compact { margin: 0 0 16px; padding: 10px 12px; font-size: 12px; }
 .record-list { margin-top: 12px; padding-top: 10px; border-top: 1px solid #3b3b3b; }.record-list summary { cursor: pointer; font-weight: 700; }.record-list li { margin: 7px 0; }.record-list-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.source-title { overflow-wrap: anywhere; margin: -4px 0 8px; color: var(--muted); font-size: 11px; font-style: italic; }
+.show-hero .source-title { margin: -2px 0 10px; font-size: 13px; }
 .import-progress { display: grid; gap: 10px; }
+.warning-panel { border-color: #7a6a2f; background: #241f10; }
+.warning-panel h2 { margin-top: 0; }
 .technical-details { margin-top: 20px; padding-top: 12px; border-top: 1px solid #333; }
 .technical-details > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 700; }
 .technical-details .report-metrics { margin-top: 14px; }

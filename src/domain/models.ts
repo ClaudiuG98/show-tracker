@@ -14,6 +14,12 @@ export interface TrackedShow {
   id: string;
   externalIds: ExternalIds;
   titleSnapshot: string;
+  /**
+   * The title the source export used, when it differs from the provider's canonical name.
+   * TVMaze often files a show under a name the user never sees ("Şahsiyet" for Persona,
+   * "La Casa de Papel" for Money Heist), which makes it unfindable by the name they know.
+   */
+  sourceTitle?: string;
   imdbAddedAt?: string;
   tvTimeAddedAt?: string;
   tvTimeRating?: number;
