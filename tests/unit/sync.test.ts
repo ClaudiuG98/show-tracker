@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ProviderEpisode, ProviderShow, TelevisionProvider } from "../../src/domain/models";
-import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, checkReleaseNotifications, ensureDailySyncAlarm, ensureMetadataRetryAlarm, runAutomaticSynchronization, shouldRefreshMetadata, synchronize } from "../../src/scheduling/sync";
+import type { ProviderEpisode, ProviderShow, TelevisionProvider, TrackedShow } from "../../src/domain/models";
+import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, checkReleaseNotifications, ensureDailySyncAlarm, ensureMetadataRetryAlarm, NEW_BADGE_TEXT, newReleasesSinceSeen, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, releaseTooltip, runAutomaticSynchronization, shouldRefreshMetadata, synchronize } from "../../src/scheduling/sync";
 import { db } from "../../src/storage/database";
 import { emptyLocalState, type LocalState } from "../../src/storage/local-state";
 
@@ -53,6 +53,7 @@ beforeEach(async () => {
       setBadgeBackgroundColor: vi.fn(async () => undefined),
       setBadgeTextColor: vi.fn(async () => undefined),
       setBadgeText: vi.fn(async () => undefined),
+      setTitle: vi.fn(async () => undefined),
     },
     alarms: {
       get: vi.fn(async () => undefined),
@@ -280,5 +281,96 @@ describe("release notifications", () => {
     await checkReleaseNotifications(now);
 
     expect(chrome.notifications.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("in-browser release cues", () => {
+  const settings = { timezone: "UTC", dateOnlyReleaseHour: "09:00", notifications: false };
+  const show = (id: string, tvmazeShow: number, userState: TrackedShow["userState"] = "watching"): TrackedShow =>
+    ({ id, externalIds: { tvmazeShow }, titleSnapshot: `Show ${tvmazeShow}`, userState,
+      importSources: ["manual"], createdAt: "2024-01-01", updatedAt: "2024-01-01" });
+  const episode = (id: number, showId: number, number: number, airstamp: string): ProviderEpisode =>
+    ({ id, showId, season: 3, number, kind: "regular", airstamp });
+  const state = (shows: TrackedShow[], lastReleaseSeenAt?: string): LocalState =>
+    ({ ...emptyLocalState(), settings, shows, ...(lastReleaseSeenAt ? { lastReleaseSeenAt } : {}) });
+  const now = Date.parse("2026-08-16T12:00:00Z");
+
+  it("counts only episodes aired since the dashboard was last opened", () => {
+    const episodes = [
+      episode(1, 10, 4, "2026-08-15T20:00:00Z"),  // after last seen
+      episode(2, 10, 3, "2026-08-10T20:00:00Z"),  // before last seen
+      episode(3, 10, 5, "2026-12-01T20:00:00Z"),  // not aired yet
+    ];
+    const fresh = newReleasesSinceSeen(state([show("a", 10)], "2026-08-14T00:00:00Z"), episodes, now);
+
+    expect(fresh.map((item) => item.episode.id)).toEqual([1]);
+  });
+
+  it("stays quiet for shows that are not being watched", () => {
+    const episodes = [episode(1, 10, 4, "2026-08-15T20:00:00Z")];
+    for (const userState of ["paused", "completed", "not_started"] as const) {
+      expect(newReleasesSinceSeen(state([show("a", 10, userState)], "2026-08-14T00:00:00Z"), episodes, now)).toEqual([]);
+    }
+  });
+
+  it("has no baseline before the dashboard has ever been opened", () => {
+    const episodes = [episode(1, 10, 4, "2026-08-15T20:00:00Z")];
+
+    expect(newReleasesSinceSeen(state([show("a", 10)]), episodes, now)).toEqual([]);
+  });
+
+  it("names the new episodes in the toolbar tooltip and folds the rest away", () => {
+    const fresh = [10, 11, 12, 13].map((tvmazeShow, index) =>
+      ({ show: show(`s${index}`, tvmazeShow), episode: episode(index, tvmazeShow, index + 1, "2026-08-15T20:00:00Z") }));
+
+    expect(releaseTooltip(fresh).split("\n")).toEqual([
+      "4 new episodes", "Show 10 — S03 · E01", "Show 11 — S03 · E02", "Show 12 — S03 · E03", "and 1 more",
+    ]);
+    expect(releaseTooltip([])).toBe("Open TV Show Tracker");
+  });
+
+  it("marks the badge instead of showing the waiting count until the releases have been seen", async () => {
+    const badge: Array<{ text: string; color: string }> = [];
+    let color = "";
+    vi.stubGlobal("chrome", {
+      action: {
+        setBadgeBackgroundColor: vi.fn(async (d: { color: string }) => { color = d.color; }),
+        setBadgeTextColor: vi.fn(async () => undefined),
+        setBadgeText: vi.fn(async (d: { text: string }) => { badge.push({ text: d.text, color }); }),
+        setTitle: vi.fn(async () => undefined),
+      },
+      alarms: { clear: vi.fn(async () => undefined), create: vi.fn(async () => undefined) },
+      storage: { local: { get: vi.fn(async () => ({ trackerState: stored })), set: vi.fn(async () => undefined) } },
+    });
+    const aired = episode(900, 10, 4, "2026-08-15T20:00:00Z");
+    await db.providerShows.put({ provider: "tvmaze", id: 10, name: "Show 10", status: "running",
+      externalIds: { tvmazeShow: 10 }, updatedAt: 1 });
+    await db.episodes.put(aired);
+
+    stored = state([show("a", 10)], "2026-08-14T00:00:00Z");
+    await recomputeBadgeAndReleaseAlarm();
+    expect(badge.at(-1)).toMatchObject({ text: NEW_BADGE_TEXT, color: "#e03131" });
+    expect(NEW_BADGE_TEXT).toHaveLength(1);
+
+    // Opening the dashboard stamps "seen", and the badge falls back to the waiting count.
+    stored = state([show("a", 10)], "2026-08-16T18:00:00Z");
+    await recomputeBadgeAndReleaseAlarm();
+    expect(badge.at(-1)?.text).not.toBe(NEW_BADGE_TEXT);
+    expect(badge.at(-1)?.color).toBe("#f5c518");
+  });
+
+  it("flashes only the colour and leaves the badge marked", async () => {
+    const text: string[] = [], colors: string[] = [];
+    vi.stubGlobal("chrome", { action: {
+      setBadgeText: vi.fn(async ({ text: value }: { text: string }) => { text.push(value); }),
+      setBadgeBackgroundColor: vi.fn(async ({ color }: { color: string }) => { colors.push(color); }),
+    } });
+
+    await pulseReleaseBadge(async () => undefined);
+
+    // The reading never changes mid-flash; only the colour alternates, ending on the alert one.
+    expect(text).toEqual([NEW_BADGE_TEXT]);
+    expect(colors).toHaveLength(10);
+    expect(colors.at(-1)).toBe("#e03131");
   });
 });

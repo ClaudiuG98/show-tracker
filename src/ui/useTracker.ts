@@ -20,6 +20,16 @@ export function useTracker() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load tracker data."); }
   }, []);
   useEffect(() => { void reload(); }, [reload]);
+  // Looking at the dashboard is what makes a release stop being new. Stamping only on mount would
+  // leave the NEW badge up for anyone who keeps the tracker open in a background tab, so a tab
+  // being brought back to the foreground counts as looking at it too.
+  useEffect(() => {
+    const markSeen = () => void updateLocalState((state) => ({ ...state, lastReleaseSeenAt: new Date().toISOString() }));
+    markSeen();
+    const onVisible = () => { if (document.visibilityState === "visible") markSeen(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 30_000);
     const listener = () => void reload();

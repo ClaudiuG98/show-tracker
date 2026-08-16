@@ -3,6 +3,7 @@ import { NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams }
 import { differenceInCalendarDays, formatDistanceToNow } from "date-fns";
 import { formatInTimeZone } from "date-fns-tz";
 import { createBackup } from "../backup/backup";
+import { newReleasesSinceSeen, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, releaseTooltip } from "../scheduling/sync";
 import { episodeReleaseInstant, getEpisodeAvailability } from "../domain/availability";
 import type { ProviderEpisode, ProviderShow, TrackedShow } from "../domain/models";
 import { selectUpcomingShows, selectWatchListShows } from "../domain/selectors";
@@ -373,6 +374,42 @@ export function SettingsPage({ tracker }: { tracker: Tracker }) {
   async function inspectRestore(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]; event.target.value = ""; if (file) await backupRestore.inspectFile(file);
   }
+  // Release notifications are a browser-level toast fired from a background alarm, so there is
+  // otherwise no way to tell a silenced notification apart from one that never fired. Chrome
+  // accepts create() happily even when the operating system is dropping every toast, so the
+  // permission level has to be asked for explicitly to tell those two apart.
+  async function sendTestNotification() {
+    const level = await new Promise<string>((resolve) => chrome.notifications.getPermissionLevel(resolve));
+    if (level !== "granted") {
+      throw new Error("Your operating system is blocking notifications for Chrome. On Windows, allow them under Settings → System → Notifications → Google Chrome.");
+    }
+    const created = await new Promise<string | undefined>((resolve) => {
+      chrome.notifications.create(`release-test:${Date.now()}`, {
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
+        title: "TV Show Tracker",
+        message: "Notifications are working. New episodes of shows you are watching will appear like this.",
+      }, (id) => resolve(chrome.runtime.lastError ? undefined : id));
+    });
+    if (!created) throw new Error("Chrome accepted the request but did not show a notification. Check Do Not Disturb or Focus Assist.");
+  }
+  /**
+   * Plays the toolbar cues on demand. They are otherwise only reachable by waiting for an episode
+   * to air while the browser is closed, which is not a thing anyone can sit down and check.
+   *
+   * Uses genuinely recent releases where there are any, so what you see is the real thing rather
+   * than a mock-up, and falls back to an example only when nothing has aired lately.
+   */
+  async function previewToolbarAlert() {
+    const local = tracker.local, episodes = tracker.domain?.episodes ?? [];
+    const recent = local
+      ? newReleasesSinceSeen({ ...local, lastReleaseSeenAt: new Date(Date.now() - 7 * 86_400_000).toISOString() }, episodes)
+      : [];
+    await chrome.action.setTitle({ title: recent.length > 0 ? releaseTooltip(recent) : "1 new episode\nExample Show — S03 · E04" });
+    await pulseReleaseBadge();
+    // Put the toolbar back to whatever is actually true once the demonstration is over.
+    await recomputeBadgeAndReleaseAlarm();
+  }
   async function toggleNotifications(enabled: boolean) {
     await updateLocalState((state) => ({ ...state, settings: { ...state.settings, notifications: enabled } }));
     await tracker.reload();
@@ -399,7 +436,7 @@ export function SettingsPage({ tracker }: { tracker: Tracker }) {
       <div className={syncFailure ? "failed" : ""}><dt>Status</dt><dd>{syncFailure ? "Needs retry" : hasValidLastSync ? "Up to date" : "Waiting for first check"}</dd></div>
     </dl>
     {syncFailure && <div className="update-warning" role="status"><strong>Automatic update failed{hasValidSyncFailureDate && <> <time dateTime={syncFailure.failedAt}>{formatInTimeZone(syncFailureDate, tracker.local!.settings.timezone, "PP · p")}</time></>}.</strong><p>{syncFailure.message} {hasValidSyncRetryDate ? <>The extension will retry <time dateTime={syncFailure.retryAt}>{formatInTimeZone(syncRetryDate, tracker.local!.settings.timezone, "PP · p")}</time>.</> : "The extension will try again during the next daily check."}</p></div>}
-    <div className="show-actions"><AsyncButton busy={tracker.metadataAction === "refresh"} disabled={tracker.metadataAction !== undefined} busyLabel="Checking for updates…" successLabel="Updates checked" onAction={() => tracker.refreshMetadata()}>Check for updates</AsyncButton></div>{tracker.metadataError && <p className="error" role="alert">{tracker.metadataError}</p>}<p className="settings-help">Manual checks are optional. Use this when you want TVMaze changes before the next automatic check.</p><details className="settings-troubleshooting"><summary>Troubleshooting</summary><p>Re-download all metadata only to repair missing or incorrect show information. It clears the provider request cache and leaves your library and watch progress untouched.</p><AsyncButton busy={tracker.metadataAction === "redownload"} disabled={tracker.metadataAction !== undefined} busyLabel={`Downloading ${showCount} shows…`} onAction={redownloadMetadata}>Re-download all metadata</AsyncButton></details></section><section className="settings"><p className="eyebrow">TV information</p><h2>Notifications</h2><p>Get a browser notification when a new episode of a show you are watching becomes available.</p><label className="checkbox-row"><input type="checkbox" checked={tracker.local?.settings.notifications ?? true} onChange={(event) => void toggleNotifications(event.target.checked)}/>Notify me about new episodes</label></section><section className="settings"><h2>Backup and restore</h2><p>Backups contain your library, progress, history, and settings. Provider images and episode metadata are refreshed after restore.</p><button onClick={download}>Export JSON backup</button><label className="file-button">Choose backup to restore<input hidden type="file" accept="application/json,.json" onChange={(event) => void inspectRestore(event)}/></label>
+    <div className="show-actions"><AsyncButton busy={tracker.metadataAction === "refresh"} disabled={tracker.metadataAction !== undefined} busyLabel="Checking for updates…" successLabel="Updates checked" onAction={() => tracker.refreshMetadata()}>Check for updates</AsyncButton></div>{tracker.metadataError && <p className="error" role="alert">{tracker.metadataError}</p>}<p className="settings-help">Manual checks are optional. Use this when you want TVMaze changes before the next automatic check.</p><details className="settings-troubleshooting"><summary>Troubleshooting</summary><p>Re-download all metadata only to repair missing or incorrect show information. It clears the provider request cache and leaves your library and watch progress untouched.</p><AsyncButton busy={tracker.metadataAction === "redownload"} disabled={tracker.metadataAction !== undefined} busyLabel={`Downloading ${showCount} shows…`} onAction={redownloadMetadata}>Re-download all metadata</AsyncButton></details></section><section className="settings"><p className="eyebrow">TV information</p><h2>Notifications</h2><p>Get a browser notification when a new episode of a show you are watching becomes available.</p><label className="checkbox-row"><input type="checkbox" checked={tracker.local?.settings.notifications ?? true} onChange={(event) => void toggleNotifications(event.target.checked)}/>Notify me about new episodes</label><div className="show-actions"><AsyncButton busyLabel="Flashing…" onAction={previewToolbarAlert}>Preview toolbar alert</AsyncButton><AsyncButton busyLabel="Sending…" successLabel="Sent" onAction={sendTestNotification}>Send a test notification</AsyncButton></div><p className="settings-help"><strong>Preview toolbar alert</strong> flashes the extension icon for five seconds — hover it while it flashes to see the episode list. This is the same cue you get when an episode airs while the browser is closed, and it needs no operating-system permission.</p><p className="settings-help"><strong>Send a test notification</strong> checks the desktop notification route instead. If nothing appears, the button will say why. Windows shows these briefly and then files them in the notification centre.</p></section><section className="settings"><h2>Backup and restore</h2><p>Backups contain your library, progress, history, and settings. Provider images and episode metadata are refreshed after restore.</p><button onClick={download}>Export JSON backup</button><label className="file-button">Choose backup to restore<input hidden type="file" accept="application/json,.json" onChange={(event) => void inspectRestore(event)}/></label>
     {backupRestore.pendingBackup && <RestorePreview backup={backupRestore.pendingBackup} onCancel={backupRestore.cancel} onConfirm={backupRestore.applyRestore}/>}
     {backupRestore.syncProgress ? <SyncProgress progress={backupRestore.syncProgress}/> : backupRestore.restoreMessage && <p className={backupRestore.restoreMessage.kind === "error" ? "error" : "success-message"} role="status">{backupRestore.restoreMessage.text}</p>}</section><section className="settings danger-zone"><p className="eyebrow">Danger zone</p><h2>Start over</h2><p>Remove the entire local tracker and return to an empty Library. Export a backup first if you may want this data again.</p><AsyncButton className="danger" busyLabel="Removing all data…" onAction={removeAllData}>Remove all data</AsyncButton></section><section className="settings"><h2>About</h2><p><strong>TV Show Tracker is an independent extension.</strong> It is not affiliated with, endorsed by, or sponsored by IMDb or TV Time.</p><p><a href="https://www.tvmaze.com/api" target="_blank" rel="noreferrer">Metadata and images provided by TVMaze under CC BY-SA.</a></p></section></>;
 }

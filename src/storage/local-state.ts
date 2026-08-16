@@ -14,6 +14,8 @@ export interface LocalState {
   lastSyncFailure?: { failedAt: string; message: string; retryAt?: string; attempt: number };
   importCommit?: { sessionId: string; marker: "prepared" | "local_committed" | "complete" };
   lastReleaseNotifiedAt?: string;
+  /** When the dashboard was last opened, which is what makes a release stop counting as new. */
+  lastReleaseSeenAt?: string;
 }
 
 const externalIdsSchema = z.object({ imdb: z.string().optional(), tvdbShow: z.number().int().positive().optional(), tvmazeShow: z.number().int().positive().optional() });
@@ -31,7 +33,8 @@ const historySchema = z.object({ id: z.string(), showId: z.string(), episodeKeys
 export const localStateSchema = z.object({ schemaVersion: z.number().int().positive(), shows: z.array(showSchema), progress: z.array(progressSchema), history: z.array(historySchema),
   settings: z.object({ dateOnlyReleaseHour: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), timezone: z.string().min(1), notifications: z.boolean().default(true) }), lastSyncAt: z.string().optional(),
   lastSyncFailure: z.object({ failedAt: z.string().datetime(), message: z.string().min(1), retryAt: z.string().datetime().optional(), attempt: z.number().int().positive() }).optional(),
-  importCommit: z.object({ sessionId: z.string(), marker: z.enum(["prepared", "local_committed", "complete"]) }).optional(), lastReleaseNotifiedAt: z.string().optional() });
+  importCommit: z.object({ sessionId: z.string(), marker: z.enum(["prepared", "local_committed", "complete"]) }).optional(),
+  lastReleaseNotifiedAt: z.string().optional(), lastReleaseSeenAt: z.string().optional() });
 export const emptyLocalState = (): LocalState => ({
   schemaVersion: LOCAL_SCHEMA_VERSION, shows: [], progress: [], history: [], settings: DEFAULT_SETTINGS,
 });

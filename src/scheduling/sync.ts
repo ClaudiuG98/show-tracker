@@ -3,7 +3,8 @@ import { readLocalState, updateLocalState } from "../storage/local-state";
 import { TvMazeProvider } from "../providers/tvmaze/provider";
 import { episodeReleaseInstant } from "../domain/availability";
 import { selectWatchListShows, type DomainState } from "../domain/selectors";
-import type { TelevisionProvider } from "../domain/models";
+import type { ProviderEpisode, TelevisionProvider, TrackedShow } from "../domain/models";
+import type { LocalState } from "../storage/local-state";
 
 const provider = new TvMazeProvider();
 export const DAILY_SYNC_ALARM = "daily-metadata-sync";
@@ -149,13 +150,80 @@ export async function checkReleaseNotifications(now: () => number = Date.now) {
   await updateLocalState((state) => ({ ...state, lastReleaseNotifiedAt: nowIso }));
 }
 
+const ACTIVE_STATES_EXCLUDED = ["paused", "not_started", "completed", "progress_unknown"];
+
+export interface NewRelease { show: TrackedShow; episode: ProviderEpisode }
+
+/**
+ * Episodes of shows being watched that aired since the dashboard was last opened.
+ *
+ * Deliberately measured against `lastReleaseSeenAt` rather than the notification marker: opening
+ * the tracker is what makes a release stop being news, regardless of whether a toast was ever
+ * shown for it. Before the dashboard has been opened once there is no baseline, so nothing is new.
+ */
+export function newReleasesSinceSeen(local: LocalState, episodes: ProviderEpisode[], now = Date.now()): NewRelease[] {
+  if (!local.lastReleaseSeenAt) return [];
+  const since = new Date(local.lastReleaseSeenAt).getTime();
+  if (Number.isNaN(since)) return [];
+  const watching = new Map(local.shows
+    .filter((show) => !ACTIVE_STATES_EXCLUDED.includes(show.userState))
+    .flatMap((show) => show.externalIds.tvmazeShow ? [[show.externalIds.tvmazeShow, show] as const] : []));
+  return episodes
+    .filter((episode) => episode.kind === "regular" && watching.has(episode.showId))
+    .flatMap((episode) => {
+      const instant = episodeReleaseInstant(episode, local.settings.timezone, local.settings.dateOnlyReleaseHour)?.getTime();
+      return instant !== undefined && instant > since && instant <= now
+        ? [{ show: watching.get(episode.showId)!, episode, instant }] : [];
+    })
+    .sort((a, b) => b.instant - a.instant)
+    .map(({ show, episode }) => ({ show, episode }));
+}
+
+export function releaseTooltip(fresh: NewRelease[]) {
+  if (fresh.length === 0) return "Open TV Show Tracker";
+  const lines = fresh.slice(0, 3).map(({ show, episode }) =>
+    `${show.titleSnapshot} — S${String(episode.season).padStart(2, "0")} · E${String(episode.number).padStart(2, "0")}`);
+  if (fresh.length > 3) lines.push(`and ${fresh.length - 3} more`);
+  return [`${fresh.length} new episode${fresh.length === 1 ? "" : "s"}`, ...lines].join("\n");
+}
+
+// A single character: Chrome shrinks badge text to fit, and anything longer buries the icon.
+// The red carries the meaning; the tooltip names the actual episodes.
+export const NEW_BADGE_TEXT = "!";
+const NEW_BADGE_COLOR = "#e03131";
+const COUNT_BADGE_COLOR = "#f5c518";
+
+/**
+ * Flashes the badge for a few seconds, then leaves it reading NEW.
+ *
+ * Only the colour alternates -- the text stays put, so the badge never flickers between two
+ * different readings. The NEW itself is not cleared here: `recomputeBadgeAndReleaseAlarm` keeps
+ * showing it until the dashboard is opened, which is what marks the releases as seen.
+ *
+ * Kept short on purpose: this runs in a service worker Chrome is free to shut down once idle.
+ */
+export async function pulseReleaseBadge(sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))) {
+  await chrome.action.setBadgeText({ text: NEW_BADGE_TEXT });
+  if (chrome.action.setBadgeTextColor) await chrome.action.setBadgeTextColor({ color: "#ffffff" });
+  for (let index = 0; index < 5; index++) {
+    await chrome.action.setBadgeBackgroundColor({ color: COUNT_BADGE_COLOR });
+    await sleep(400);
+    await chrome.action.setBadgeBackgroundColor({ color: NEW_BADGE_COLOR });
+    await sleep(400);
+  }
+}
+
 export async function recomputeBadgeAndReleaseAlarm() {
   const [local, providerShows, episodes] = await Promise.all([readLocalState(), db.providerShows.toArray(), db.episodes.toArray()]);
   const state: DomainState = { shows: local.shows, progress: local.progress, settings: local.settings, providerShows, episodes };
   const count = selectWatchListShows(state).length;
-  await chrome.action.setBadgeBackgroundColor({ color: "#f5c518" });
-  if (chrome.action.setBadgeTextColor) await chrome.action.setBadgeTextColor({ color: "#111111" });
-  await chrome.action.setBadgeText({ text: count ? String(count) : "" });
+  // NEW outranks the waiting count and stays up until the dashboard is opened, so an episode
+  // that aired while the browser was closed cannot be missed by glancing at the toolbar.
+  const fresh = newReleasesSinceSeen(local, episodes);
+  await chrome.action.setBadgeBackgroundColor({ color: fresh.length > 0 ? NEW_BADGE_COLOR : COUNT_BADGE_COLOR });
+  if (chrome.action.setBadgeTextColor) await chrome.action.setBadgeTextColor({ color: fresh.length > 0 ? "#ffffff" : "#111111" });
+  await chrome.action.setBadgeText({ text: fresh.length > 0 ? NEW_BADGE_TEXT : count ? String(count) : "" });
+  await chrome.action.setTitle({ title: releaseTooltip(fresh) });
   const now = Date.now();
   const nearest = episodes.filter((episode) => episode.kind === "regular")
     .map((episode) => episodeReleaseInstant(episode, local.settings.timezone, local.settings.dateOnlyReleaseHour)?.getTime())

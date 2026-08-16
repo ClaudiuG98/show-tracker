@@ -2,7 +2,7 @@ import { requestSchema } from "../src/messaging/messages";
 import { LOCAL_STATE_KEY, readLocalState, updateLocalState } from "../src/storage/local-state";
 import { db } from "../src/storage/database";
 import { TvMazeProvider } from "../src/providers/tvmaze/provider";
-import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, RELEASE_ALARM, checkReleaseNotifications, ensureSyncAlarms, recomputeBadgeAndReleaseAlarm, runAutomaticSynchronization, synchronize } from "../src/scheduling/sync";
+import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, RELEASE_ALARM, checkReleaseNotifications, ensureSyncAlarms, newReleasesSinceSeen, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, runAutomaticSynchronization, synchronize } from "../src/scheduling/sync";
 import { selectWatchListShows } from "../src/domain/selectors";
 
 const dashboardUrl = (route = "/") => chrome.runtime.getURL(`/dashboard.html#${route}`);
@@ -12,7 +12,15 @@ export default defineBackground(() => {
     console.warn(`[TV Show Tracker] ${label}`, error);
   });
   chrome.runtime.onInstalled.addListener(() => safely("Could not initialize background alarms after installation.", ensureSyncAlarms()));
-  chrome.runtime.onStartup.addListener(() => safely("Could not restore the badge after browser startup.", ensureSyncAlarms()));
+  // The release alarm is a one-shot set for the next episode, and ensureSyncAlarms clears any
+  // alarm that is no longer in the future -- so an episode that aired while the browser was
+  // closed would have its pending alarm wiped before it could ever fire. Catch up on startup.
+  chrome.runtime.onStartup.addListener(() => safely("Could not restore the badge after browser startup.", (async () => {
+    await checkReleaseNotifications();
+    await ensureSyncAlarms();
+    const [local, episodes] = await Promise.all([readLocalState(), db.episodes.toArray()]);
+    if (newReleasesSinceSeen(local, episodes).length > 0) await pulseReleaseBadge();
+  })()));
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === "local" && changes[LOCAL_STATE_KEY]) {
       safely("Could not update the badge after tracker data changed.", recomputeBadgeAndReleaseAlarm());
