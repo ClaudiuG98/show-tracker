@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderEpisode, ProviderShow, TelevisionProvider, TrackedShow } from "../../src/domain/models";
-import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, checkReleaseNotifications, ensureDailySyncAlarm, ensureMetadataRetryAlarm, NEW_BADGE_TEXT, newReleasesSinceSeen, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, releaseTooltip, runAutomaticSynchronization, shouldRefreshMetadata, synchronize } from "../../src/scheduling/sync";
+import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, ensureDailySyncAlarm, ensureMetadataRetryAlarm, NEW_BADGE_TEXT, newReleasesSinceSeen, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, releaseTooltip, runAutomaticSynchronization, shouldRefreshMetadata, synchronize } from "../../src/scheduling/sync";
 import { db } from "../../src/storage/database";
 import { emptyLocalState, type LocalState } from "../../src/storage/local-state";
 
@@ -223,69 +223,8 @@ describe("daily synchronization alarm", () => {
   });
 });
 
-describe("release notifications", () => {
-  const nowMs = new Date("2026-07-26T12:00:00.000Z").getTime();
-  const now = () => nowMs;
-  const episode = (overrides: Partial<ProviderEpisode> = {}): ProviderEpisode => ({
-    id: 1, showId: 10, season: 1, number: 3, name: "New episode", kind: "regular", airstamp: new Date(nowMs - 3 * 3_600_000).toISOString(), ...overrides,
-  });
-
-  it("sets a baseline on first run without notifying", async () => {
-    await db.episodes.put(episode());
-
-    await checkReleaseNotifications(now);
-
-    expect(chrome.notifications.create).not.toHaveBeenCalled();
-    expect(stored.lastReleaseNotifiedAt).toBe(new Date(nowMs).toISOString());
-  });
-
-  it("notifies for a newly released episode of an actively tracked show", async () => {
-    stored.lastReleaseNotifiedAt = new Date(nowMs - 4 * 3_600_000).toISOString();
-    await db.episodes.put(episode());
-
-    await checkReleaseNotifications(now);
-
-    expect(chrome.notifications.create).toHaveBeenCalledTimes(1);
-    expect(chrome.notifications.create).toHaveBeenCalledWith("release:local-1:1", expect.objectContaining({ title: "Silo" }));
-    expect(stored.lastReleaseNotifiedAt).toBe(new Date(nowMs).toISOString());
-  });
-
-  it("does not notify for a paused show", async () => {
-    stored.shows = [{ ...trackedShow, userState: "paused" }];
-    stored.lastReleaseNotifiedAt = new Date(nowMs - 4 * 3_600_000).toISOString();
-    await db.episodes.put(episode());
-
-    await checkReleaseNotifications(now);
-
-    expect(chrome.notifications.create).not.toHaveBeenCalled();
-  });
-
-  it("skips notifying when disabled but still advances the baseline", async () => {
-    stored.settings.notifications = false;
-    stored.lastReleaseNotifiedAt = new Date(nowMs - 4 * 3_600_000).toISOString();
-    await db.episodes.put(episode());
-
-    await checkReleaseNotifications(now);
-
-    expect(chrome.notifications.create).not.toHaveBeenCalled();
-    expect(stored.lastReleaseNotifiedAt).toBe(new Date(nowMs).toISOString());
-  });
-
-  it("ignores episodes released before the last check or still in the future", async () => {
-    stored.lastReleaseNotifiedAt = new Date(nowMs - 4 * 3_600_000).toISOString();
-    await db.episodes.bulkPut([
-      episode({ id: 2, airstamp: new Date(nowMs - 5 * 3_600_000).toISOString() }),
-      episode({ id: 3, airstamp: new Date(nowMs + 24 * 3_600_000).toISOString() }),
-    ]);
-
-    await checkReleaseNotifications(now);
-
-    expect(chrome.notifications.create).not.toHaveBeenCalled();
-  });
-});
-
 describe("in-browser release cues", () => {
-  const settings = { timezone: "UTC", dateOnlyReleaseHour: "09:00", notifications: false };
+  const settings = { timezone: "UTC", dateOnlyReleaseHour: "09:00", notifications: true };
   const show = (id: string, tvmazeShow: number, userState: TrackedShow["userState"] = "watching"): TrackedShow =>
     ({ id, externalIds: { tvmazeShow }, titleSnapshot: `Show ${tvmazeShow}`, userState,
       importSources: ["manual"], createdAt: "2024-01-01", updatedAt: "2024-01-01" });
@@ -304,6 +243,13 @@ describe("in-browser release cues", () => {
     const fresh = newReleasesSinceSeen(state([show("a", 10)], "2026-08-14T00:00:00Z"), episodes, now);
 
     expect(fresh.map((item) => item.episode.id)).toEqual([1]);
+  });
+
+  it("stays quiet when the icon alert is switched off", () => {
+    const episodes = [episode(1, 10, 4, "2026-08-15T20:00:00Z")];
+    const off = { ...state([show("a", 10)], "2026-08-14T00:00:00Z"), settings: { ...settings, notifications: false } };
+
+    expect(newReleasesSinceSeen(off, episodes, now)).toEqual([]);
   });
 
   it("stays quiet for shows that are not being watched", () => {

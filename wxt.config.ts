@@ -8,7 +8,7 @@ export default defineConfig({
     short_name: "TV Show Tracker",
     description: "A private, local TV episode tracker for IMDb lists.",
     version: "0.1.0",
-    permissions: ["storage", "alarms", "notifications"],
+    permissions: ["storage", "alarms"],
     host_permissions: ["https://www.imdb.com/*", "https://api.tvmaze.com/*"],
     icons: {
       16: "icons/icon-16.png",

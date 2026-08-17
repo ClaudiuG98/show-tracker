@@ -51,6 +51,12 @@ controls. It reads only the page address and the page's public title information
 which show you are looking at. It does not read your IMDb account, your cookies, or anything you
 type, and it sends nothing to IMDb or to anyone else.
 
+## Notifications
+
+The extension does not use desktop or system notifications. When a new episode becomes available
+it marks its own toolbar icon, which requires no notification permission and sends nothing outside
+the browser.
+
 ## Children
 
 The extension is not directed at children and collects no data from anyone.

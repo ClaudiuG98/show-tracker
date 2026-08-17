@@ -2,7 +2,7 @@ import { requestSchema } from "../src/messaging/messages";
 import { LOCAL_STATE_KEY, readLocalState, updateLocalState } from "../src/storage/local-state";
 import { db } from "../src/storage/database";
 import { TvMazeProvider } from "../src/providers/tvmaze/provider";
-import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, RELEASE_ALARM, checkReleaseNotifications, ensureSyncAlarms, newReleasesSinceSeen, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, runAutomaticSynchronization, synchronize } from "../src/scheduling/sync";
+import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, RELEASE_ALARM, ensureSyncAlarms, newReleasesSinceSeen, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, runAutomaticSynchronization, synchronize } from "../src/scheduling/sync";
 import { selectWatchListShows } from "../src/domain/selectors";
 
 const dashboardUrl = (route = "/") => chrome.runtime.getURL(`/dashboard.html#${route}`);
@@ -16,7 +16,6 @@ export default defineBackground(() => {
   // alarm that is no longer in the future -- so an episode that aired while the browser was
   // closed would have its pending alarm wiped before it could ever fire. Catch up on startup.
   chrome.runtime.onStartup.addListener(() => safely("Could not restore the badge after browser startup.", (async () => {
-    await checkReleaseNotifications();
     await ensureSyncAlarms();
     const [local, episodes] = await Promise.all([readLocalState(), db.episodes.toArray()]);
     if (newReleasesSinceSeen(local, episodes).length > 0) await pulseReleaseBadge();
@@ -31,15 +30,10 @@ export default defineBackground(() => {
     if (alarm.name === DAILY_SYNC_ALARM) safely("Automatic metadata check failed.", runAutomaticSynchronization("daily"));
     else if (alarm.name === METADATA_RETRY_ALARM) safely("Automatic metadata retry failed.", runAutomaticSynchronization("retry"));
     else if (alarm.name === RELEASE_ALARM) safely("Could not update the release badge.", (async () => {
-      await checkReleaseNotifications();
       await recomputeBadgeAndReleaseAlarm();
+      const [local, episodes] = await Promise.all([readLocalState(), db.episodes.toArray()]);
+      if (newReleasesSinceSeen(local, episodes).length > 0) await pulseReleaseBadge();
     })());
-  });
-  chrome.notifications.onClicked.addListener((notificationId) => {
-    const [kind, showId, episodeId] = notificationId.split(":");
-    if (kind !== "release") return;
-    void chrome.notifications.clear(notificationId);
-    void chrome.tabs.create({ url: dashboardUrl(episodeId ? `/show/${showId}/episode/${episodeId}` : "/watch-list") });
   });
   chrome.runtime.onMessage.addListener((raw, sender, respond) => {
     const parsed = requestSchema.safeParse(raw);

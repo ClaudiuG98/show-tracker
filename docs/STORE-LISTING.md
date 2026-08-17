@@ -17,14 +17,8 @@ browser storage. This is the extension's core function. Nothing is transmitted.
 
 ### `alarms`
 Schedules two background jobs: a once-daily check for updated show metadata from TVMaze, and a
-one-shot timer for when the next episode of a tracked show is due, which is what triggers the new
-episode notification. Without alarms the extension could only refresh while its dashboard was
-open.
-
-### `notifications`
-Shows a browser notification when a new episode of a show the user is currently watching becomes
-available. Notifications are limited to shows already in the user's library, and can be switched
-off in the extension's settings.
+one-shot timer for when the next episode of a tracked show is due, which is what marks the
+toolbar icon. Without alarms the extension could only refresh while its dashboard was open.
 
 ### Host permission — `https://api.tvmaze.com/*`
 TVMaze is the sole source of show and episode information: titles, season and episode numbering,
@@ -65,7 +59,8 @@ Privacy policy URL: link to `docs/PRIVACY.md` in the public repository.
 >   Refract. Watch progress, ratings and the dates you added shows all come across.
 > • A Watch List that shows only what you can actually watch next — the earliest unwatched episode
 >   of each show, with anything unreleased kept out of the way.
-> • Optional notifications when a new episode of a show you are watching becomes available.
+> • The toolbar icon is marked when a new episode of a show you are watching becomes available,
+>   with no desktop notifications and no system permissions.
 > • Back up and restore everything as a single JSON file.
 >
 > There is no account and no server. Your library, your progress and your history are stored in
@@ -83,5 +78,5 @@ Privacy policy URL: link to `docs/PRIVACY.md` in the public repository.
 - [ ] Verify the "Tracker" button appears on a real IMDb series page in a normal browsing session
       — automated browsers are served IMDb's human-verification wall, so this cannot be checked
       in CI
-- [ ] Confirm a test notification arrives via Settings → Send a test notification
+- [ ] Confirm the icon alert works via Settings → Preview the alert (extension must be pinned)
 - [ ] `npm run build` and upload `.output/chrome-mv3` zipped

@@ -118,37 +118,6 @@ export async function ensureSyncAlarms() {
   await recomputeBadgeAndReleaseAlarm();
 }
 
-export async function checkReleaseNotifications(now: () => number = Date.now) {
-  if (typeof chrome === "undefined" || !chrome.notifications) return;
-  const local = await readLocalState();
-  const nowInstant = new Date(now()), nowIso = nowInstant.toISOString();
-  if (!local.settings.notifications || !local.lastReleaseNotifiedAt) {
-    await updateLocalState((state) => ({ ...state, lastReleaseNotifiedAt: nowIso }));
-    return;
-  }
-  const since = new Date(local.lastReleaseNotifiedAt).getTime();
-  const episodes = await db.episodes.toArray();
-  const activeShowByTvmazeId = new Map(local.shows
-    .filter((show) => !["paused", "not_started", "completed", "progress_unknown"].includes(show.userState))
-    .flatMap((show) => show.externalIds.tvmazeShow ? [[show.externalIds.tvmazeShow, show] as const] : []));
-  const released = episodes
-    .filter((episode) => episode.kind === "regular" && activeShowByTvmazeId.has(episode.showId))
-    .flatMap((episode) => {
-      const instant = episodeReleaseInstant(episode, local.settings.timezone, local.settings.dateOnlyReleaseHour)?.getTime();
-      return instant !== undefined && instant > since && instant <= nowInstant.getTime()
-        ? [{ episode, instant, show: activeShowByTvmazeId.get(episode.showId)! }] : [];
-    })
-    .sort((a, b) => a.instant - b.instant);
-  for (const { show, episode } of released.slice(0, 5)) {
-    await chrome.notifications.create(`release:${show.id}:${episode.id}`, {
-      type: "basic",
-      iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
-      title: show.titleSnapshot,
-      message: `S${String(episode.season).padStart(2, "0")} · E${String(episode.number).padStart(2, "0")}${episode.name ? ` — ${episode.name}` : ""} is now available.`,
-    });
-  }
-  await updateLocalState((state) => ({ ...state, lastReleaseNotifiedAt: nowIso }));
-}
 
 const ACTIVE_STATES_EXCLUDED = ["paused", "not_started", "completed", "progress_unknown"];
 
@@ -157,12 +126,11 @@ export interface NewRelease { show: TrackedShow; episode: ProviderEpisode }
 /**
  * Episodes of shows being watched that aired since the dashboard was last opened.
  *
- * Deliberately measured against `lastReleaseSeenAt` rather than the notification marker: opening
- * the tracker is what makes a release stop being news, regardless of whether a toast was ever
- * shown for it. Before the dashboard has been opened once there is no baseline, so nothing is new.
+ * Opening the tracker is what makes a release stop being news. Before the dashboard has been
+ * opened once there is no baseline, so nothing counts as new.
  */
 export function newReleasesSinceSeen(local: LocalState, episodes: ProviderEpisode[], now = Date.now()): NewRelease[] {
-  if (!local.lastReleaseSeenAt) return [];
+  if (!local.settings.notifications || !local.lastReleaseSeenAt) return [];
   const since = new Date(local.lastReleaseSeenAt).getTime();
   if (Number.isNaN(since)) return [];
   const watching = new Map(local.shows
