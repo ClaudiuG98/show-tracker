@@ -3,6 +3,7 @@ import type { ProviderEpisode, ProviderShow, TelevisionProvider, TrackedShow } f
 import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, ensureDailySyncAlarm, ensureMetadataRetryAlarm, NEW_BADGE_TEXT, newReleasesSinceSeen, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, releaseTooltip, runAutomaticSynchronization, shouldRefreshMetadata, synchronize } from "../../src/scheduling/sync";
 import { db } from "../../src/storage/database";
 import { emptyLocalState, type LocalState } from "../../src/storage/local-state";
+import { TvMazeProvider } from "../../src/providers/tvmaze/provider";
 
 const trackedShow = {
   id: "local-1",
@@ -72,11 +73,80 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
 describe("metadata refresh selection", () => {
+  it("bypasses warm caches for changed shows and refreshes caches for later imports", async () => {
+    const oldShow = { id: 10, name: "Silo", status: "Running", updated: 100,
+      externals: { imdb: "tt14688458", thetvdb: 403245, tvrage: null } };
+    const oldEpisode = { id: 1, name: "Old episode", season: 1, number: 1, type: "regular", airdate: "2026-01-01", airtime: "20:00", airstamp: "2026-01-01T20:00:00Z" };
+    let updated = false;
+    const request = vi.fn(async (path: string) => {
+      if (path.startsWith("/updates/shows")) return { "10": 101 };
+      if (path.endsWith("/episodes")) return updated ? [oldEpisode, { ...oldEpisode, id: 2, number: 2 }] : [oldEpisode];
+      return updated ? { ...oldShow, name: "Updated Silo", updated: 101 } : oldShow;
+    });
+    const provider = new TvMazeProvider({ request });
+    await provider.getShow(10);
+    await provider.getEpisodes(10);
+    stored.progress = [{ localShowId: trackedShow.id, tvmazeEpisodeId: 1, season: 1, episode: 1, watched: true, source: "user" }];
+    const progress = structuredClone(stored.progress);
+    updated = true;
+    request.mockClear();
+
+    await synchronize(provider);
+
+    expect(request.mock.calls.map(([path]) => path)).toEqual(expect.arrayContaining(["/shows/10", "/shows/10/episodes"]));
+    expect((await db.providerShows.get(10))?.name).toBe("Updated Silo");
+    expect(await db.episodes.count()).toBe(2);
+    expect(stored.shows[0]?.providerUpdatedAt).toBe(101);
+    expect(stored.progress).toEqual(progress);
+    request.mockClear();
+    await expect(provider.lookupByImdbId("tt14688458")).resolves.toMatchObject({ updatedAt: 101 });
+    await expect(provider.getEpisodes(10)).resolves.toHaveLength(2);
+    expect(request).not.toHaveBeenCalled();
+    await synchronize(provider);
+    expect(request.mock.calls.every(([path]) => path.startsWith("/updates/shows"))).toBe(true);
+  });
+
+  it.each(["episodes", "missing show", "stale show", "storage"])("keeps failed %s refreshes eligible and preserves saved metadata", async (failure) => {
+    const provider = fakeProvider(new Map([[10, 101]]));
+    const lastSyncAt = stored.lastSyncAt;
+    const oldEpisode: ProviderEpisode = { id: 1, showId: 10, season: 1, number: 1, kind: "regular" };
+    await db.episodes.put(oldEpisode);
+    if (failure === "episodes") vi.mocked(provider.getEpisodes).mockRejectedValueOnce(new Error("Offline"));
+    if (failure === "missing show") vi.mocked(provider.getShow).mockResolvedValueOnce(null);
+    if (failure === "stale show") vi.mocked(provider.getShow).mockResolvedValueOnce(providerShow(100));
+    if (failure === "storage") vi.spyOn(db.episodes, "bulkPut").mockRejectedValueOnce(new Error("Storage failed"));
+
+    await expect(synchronize(provider)).rejects.toThrow("1 show could not be refreshed.");
+    expect(stored.lastSyncAt).toBe(lastSyncAt);
+    expect(stored.shows[0]?.providerUpdatedAt).toBe(100);
+    expect((await db.providerShows.get(10))?.updatedAt).toBe(100);
+    expect(await db.episodes.toArray()).toEqual([oldEpisode]);
+
+    await synchronize(provider);
+    expect(stored.shows[0]?.providerUpdatedAt).toBe(101);
+    expect(stored.lastSyncAt).not.toBe(lastSyncAt);
+  });
+
+  it("preserves retry backoff across repeated per-show failures", async () => {
+    const provider = fakeProvider(new Map([[10, 101]]));
+    vi.mocked(provider.getEpisodes).mockRejectedValue(new Error("Offline"));
+    await runAutomaticSynchronization("daily", provider);
+    expect(stored.lastSyncFailure?.attempt).toBe(1);
+    await runAutomaticSynchronization("retry", provider);
+    expect(stored.lastSyncFailure?.attempt).toBe(2);
+    await runAutomaticSynchronization("retry", provider);
+    expect(stored.lastSyncFailure?.attempt).toBe(3);
+    await runAutomaticSynchronization("retry", provider);
+    expect(stored.lastSyncFailure?.attempt).toBe(4);
+    expect(stored.lastSyncFailure?.retryAt).toBeUndefined();
+  });
+
   it("skips current metadata when TVMaze omits an unchanged show", () => {
     expect(shouldRefreshMetadata(stored.lastSyncAt, undefined, 100, 2)).toBe(false);
   });
@@ -106,9 +176,9 @@ describe("metadata refresh selection", () => {
     await synchronize(provider);
 
     expect(provider.getShow).toHaveBeenCalledTimes(1);
-    expect(provider.getShow).toHaveBeenCalledWith(10);
+    expect(provider.getShow).toHaveBeenCalledWith(10, { forceRefresh: true });
     expect(provider.getEpisodes).toHaveBeenCalledTimes(1);
-    expect(provider.getEpisodes).toHaveBeenCalledWith(10);
+    expect(provider.getEpisodes).toHaveBeenCalledWith(10, { forceRefresh: true });
   });
 
   it("isolates a per-show failure so other shows still refresh, and leaves the failed one eligible for retry", async () => {
@@ -128,8 +198,8 @@ describe("metadata refresh selection", () => {
 
     await expect(synchronize(provider)).rejects.toThrow("1 show could not be refreshed.");
 
-    expect(provider.getShow).toHaveBeenCalledWith(10);
-    expect(provider.getShow).toHaveBeenCalledWith(11);
+    expect(provider.getShow).toHaveBeenCalledWith(10, { forceRefresh: true });
+    expect(provider.getShow).toHaveBeenCalledWith(11, { forceRefresh: true });
     expect(stored.shows.find((show) => show.id === "local-1")?.providerUpdatedAt).toBe(101);
     expect(stored.shows.find((show) => show.id === "local-2")?.providerUpdatedAt).toBe(100);
   });
@@ -303,6 +373,25 @@ describe("in-browser release cues", () => {
     await recomputeBadgeAndReleaseAlarm();
     expect(badge.at(-1)?.text).not.toBe(NEW_BADGE_TEXT);
     expect(badge.at(-1)?.color).toBe("#f5c518");
+  });
+
+  it("hands the new releases back so callers need not rescan the episode table", async () => {
+    vi.stubGlobal("chrome", {
+      action: {
+        setBadgeBackgroundColor: vi.fn(async () => undefined), setBadgeTextColor: vi.fn(async () => undefined),
+        setBadgeText: vi.fn(async () => undefined), setTitle: vi.fn(async () => undefined),
+      },
+      alarms: { clear: vi.fn(async () => undefined), create: vi.fn(async () => undefined) },
+      storage: { local: { get: vi.fn(async () => ({ trackerState: stored })), set: vi.fn(async () => undefined) } },
+    });
+    await db.providerShows.put({ provider: "tvmaze", id: 10, name: "Show 10", status: "running",
+      externalIds: { tvmazeShow: 10 }, updatedAt: 1 });
+    await db.episodes.put(episode(900, 10, 4, "2026-08-15T20:00:00Z"));
+    stored = state([show("a", 10)], "2026-08-14T00:00:00Z");
+
+    const fresh = await recomputeBadgeAndReleaseAlarm();
+
+    expect(fresh.map((item) => item.episode.id)).toEqual([900]);
   });
 
   it("flashes only the colour and leaves the badge marked", async () => {

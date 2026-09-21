@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getEpisodeAvailability } from "../domain/availability";
+import { undoConfirmation, undoHistoryAction } from "../domain/undo";
 import type { ActionSnapshot, ProviderEpisode, ProviderShow, TrackedShow, WatchedAction } from "../domain/models";
 import { db, resetMetadataCache } from "../storage/database";
 import { readLocalState, updateLocalState, type LocalState } from "../storage/local-state";
@@ -64,11 +65,11 @@ export function useTracker() {
     setStatus(watched ? "Episode marked watched." : "Episode marked unwatched.");
   };
   const undo = async (action: WatchedAction) => {
-    await updateLocalState((state) => ({ ...state,
-      progress: [...state.progress.filter((p) => p.localShowId !== action.showId), ...action.before.episodes],
-      shows: state.shows.map((s) => s.id === action.showId ? { ...s, userState: action.before.userState, updatedAt: new Date().toISOString() } : s),
-      history: state.history.filter((item) => item.id !== action.id),
-    })); await reload();
+    const confirmation = undoConfirmation(action);
+    if (confirmation && !window.confirm(confirmation)) return;
+    await updateLocalState((state) => undoHistoryAction(state, action.id));
+    await reload();
+    setStatus("Action undone. Other progress was kept.");
   };
   const setShowState = async (showId: string, userState: TrackedShow["userState"]) => {
     await updateLocalState((state) => {

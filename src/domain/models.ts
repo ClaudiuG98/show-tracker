@@ -130,11 +130,13 @@ export const DEFAULT_SETTINGS: Settings = {
   notifications: true,
 };
 
+export interface ProviderFetchOptions { forceRefresh?: boolean }
+
 export interface TelevisionProvider {
   lookupByImdbId(id: string): Promise<ProviderShow | null>;
   lookupByTvdbId(id: number): Promise<ProviderShow | null>;
-  getShow(id: number): Promise<ProviderShow | null>;
-  getEpisodes(id: number): Promise<ProviderEpisode[]>;
+  getShow(id: number, options?: ProviderFetchOptions): Promise<ProviderShow | null>;
+  getEpisodes(id: number, options?: ProviderFetchOptions): Promise<ProviderEpisode[]>;
   getAlternateEpisodeMappings?(id: number): Promise<ProviderAlternateEpisodeMapping[]>;
   getChangedShows(since: "day" | "week" | "month" | "all"): Promise<Map<number, number>>;
 }

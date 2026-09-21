@@ -5,6 +5,7 @@ import { formatInTimeZone } from "date-fns-tz";
 import { createBackup } from "../backup/backup";
 import { newReleasesSinceSeen, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, releaseTooltip } from "../scheduling/sync";
 import { episodeReleaseInstant, getEpisodeAvailability } from "../domain/availability";
+import { groupHistoryByShow } from "../domain/history";
 import type { ProviderEpisode, ProviderShow, TrackedShow } from "../domain/models";
 import { selectUpcomingShows, selectWatchListShows } from "../domain/selectors";
 import { groupRegularEpisodesBySeason, librarySummary, posterUrls, providerFor } from "../domain/view-models";
@@ -23,6 +24,7 @@ import { useBackupRestore } from "./useBackupRestore";
 import { useTracker } from "./useTracker";
 
 type Tracker = ReturnType<typeof useTracker>;
+const HISTORY_PAGE_SIZE = 20;
 const episodeCode = (episode: ProviderEpisode) => `S${String(episode.season).padStart(2, "0")} · E${String(episode.number).padStart(2, "0")}`;
 const stateLabel = (value: string) => value.replaceAll("_", " ");
 const waitForExit = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -158,6 +160,10 @@ function RouteScrollReset() {
 export function WatchList({ tracker }: { tracker: Tracker }) {
   const [completing, setCompleting] = useState<Set<string>>(new Set());
   const [actionError, setActionError] = useState("");
+  const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE_SIZE);
+  const history = tracker.local?.history ?? [];
+  const historyGroups = groupHistoryByShow(history);
+  const visibleHistory = historyGroups.slice(0, historyLimit);
   const items = tracker.domain ? selectWatchListShows(tracker.domain, tracker.now) : [];
   const mark = async (showId: string, run: () => Promise<void>) => { setActionError(""); setCompleting((old) => new Set(old).add(showId)); try { await waitForExit(); await run(); } catch (cause) { setActionError(cause instanceof Error ? cause.message : "The episode could not be updated."); } finally { setCompleting((old) => { const next = new Set(old); next.delete(showId); return next; }); } };
   return <><PageHeading title="Watch List" description="Pick up with the earliest available unwatched episode."/>
@@ -168,7 +174,20 @@ export function WatchList({ tracker }: { tracker: Tracker }) {
       <a className="card-overlay-link" href={`#/show/${show.id}/episode/${episode.id}`} aria-label={`Open ${show.titleSnapshot} episode details: ${episode.name ?? episodeCode(episode)}`}/>
       <button className="watched" disabled={completing.has(show.id)} aria-label={`Mark ${episode.name ?? episodeCode(episode)} watched`} onClick={() => void mark(show.id, () => tracker.markEpisode(show, episode.id, true))}><span aria-hidden="true">✓</span></button>
     </article>; })}</section><TvMazeAttribution/>
-    <details className="history"><summary>Watched history <span>{tracker.local?.history.length ?? 0}</span></summary>{!tracker.local?.history.length && <p className="history-empty">Episodes you mark watched will appear here with their season, episode, and title.</p>}{tracker.local?.history.slice(0, 20).map((action) => <article className="history-entry" key={action.id}><div className="history-mark" aria-hidden="true">✓</div><div className="history-copy"><strong>{tracker.local?.shows.find((show) => show.id === action.showId)?.titleSnapshot ?? "Removed show"}</strong><span>{historyDescription(action, tracker)}</span></div><time dateTime={action.occurredAt}>{formatAddedDate(action.occurredAt)}</time><AsyncButton busyLabel="Undoing…" onAction={() => tracker.undo(action)}>Undo</AsyncButton></article>)}</details></>;
+    <details className="history"><summary>Watched history <span aria-label={`${historyGroups.length} shows in history`}>{historyGroups.length}</span></summary>
+      {!history.length && <p className="history-empty">Episodes you mark watched will appear here with their season, episode, and title.</p>}
+      {history.length > 0 && <p className="history-count" role="status">Showing {visibleHistory.length} of {historyGroups.length} {historyGroups.length === 1 ? "show" : "shows"}</p>}
+      {visibleHistory.map((group) => {
+        const show = tracker.local?.shows.find((show) => show.id === group.showId);
+        const title = show?.titleSnapshot ?? "Removed show";
+        const poster = posterUrls(show && tracker.domain ? providerFor(tracker.domain, show) : undefined);
+        return <details className="history-group" key={group.showId}>
+        <summary><Poster title={title} {...poster}/><span className="history-group-copy"><strong>{title}</strong><small>{group.watchedEpisodes.size > 0
+          ? `${group.watchedEpisodes.size} ${group.watchedEpisodes.size === 1 ? "episode" : "episodes"} marked watched · ` : ""}{group.actions.length} {group.actions.length === 1 ? "action" : "actions"}</small></span></summary>
+        {group.actions.map((action) => <article className="history-entry" key={action.id}><div className="history-mark" aria-hidden="true">{action.action === "watched" || action.action === "bulk_watched" ? "✓" : "↶"}</div><div className="history-copy"><span>{historyDescription(action, tracker)}</span></div><time dateTime={action.occurredAt}>{formatAddedDate(action.occurredAt)}</time><AsyncButton busyLabel="Undoing…" retryHint={false} onAction={() => tracker.undo(action)}>Undo</AsyncButton></article>)}
+      </details>; })}
+      {visibleHistory.length < historyGroups.length && <button className="history-load-more" type="button" onClick={() => setHistoryLimit((limit) => limit + HISTORY_PAGE_SIZE)}>Load more</button>}
+    </details></>;
 }
 
 export function Upcoming({ tracker }: { tracker: Tracker }) {

@@ -10,6 +10,8 @@ import { resetImportStore, useImportStore } from "../../src/ui/import/import-sto
 import type { useTracker } from "../../src/ui/useTracker";
 import { emptyImportDecisions } from "../../src/imports/preview";
 import type { ImportAnalysis } from "../../src/imports/session";
+import { bingersZip } from "../fixtures/bingers";
+import { TvMazeProvider } from "../../src/providers/tvmaze/provider";
 
 afterEach(() => { cleanup(); resetImportStore(); vi.restoreAllMocks(); });
 
@@ -144,7 +146,66 @@ describe("dashboard cards", () => {
       before: { episodes: [], userState: "watching" as const }, after: { episodes: [], userState: "watching" as const }, occurredAt: "2022-10-11T12:30:00Z" };
     render(<MemoryRouter><WatchList tracker={tracker({ local: { ...tracker().local!, shows: [show], progress: [], settings: domain.settings, history: [action] } })}/></MemoryRouter>);
     fireEvent.click(screen.getByText(/Watched history/));
+    expect(within(document.querySelector(".history-group > summary")! as HTMLElement).getByRole("img", { name: "Silo poster" })).toHaveAttribute("src", "https://static.tvmaze.com/medium.jpg");
+    expect(document.querySelector(".history-entry .poster")).toBeNull();
+    fireEvent.click(document.querySelector(".history-group > summary")!);
     expect(screen.getByText("Oct 11, 2022")).toBeVisible();
+  });
+
+  it.each([0, 1, 20, 21, 40, 119])("lets all %i history shows be displayed in batches of 20", async (total) => {
+    const history = Array.from({ length: total }, (_, index) => ({
+      id: `history-${index}`, showId: `show-${index}`, episodeKeys: ["1"], action: "watched" as const,
+      before: { episodes: [], userState: "watching" as const }, after: { episodes: [], userState: "watching" as const },
+      occurredAt: new Date(Date.UTC(2026, 0, total - index)).toISOString(),
+    }));
+    const current = tracker({ local: { ...tracker().local!, history } });
+    render(<MemoryRouter><WatchList tracker={current}/></MemoryRouter>);
+    fireEvent.click(screen.getByText(/Watched history/));
+    expect(screen.getByLabelText(`${total} shows in history`)).toHaveTextContent(String(total));
+
+    if (total === 0) {
+      expect(screen.getByText(/Episodes you mark watched will appear here/)).toBeVisible();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    } else {
+      let visible = Math.min(20, total);
+      const expectVisibleEntries = () => {
+        expect(document.querySelectorAll(".history-group")).toHaveLength(visible);
+        document.querySelectorAll(".history-group:not([open]) > summary").forEach((summary) => fireEvent.click(summary));
+        expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(visible);
+        expect(screen.getByRole("status")).toHaveTextContent(`Showing ${visible} of ${total} ${total === 1 ? "show" : "shows"}`);
+      };
+      expectVisibleEntries();
+      while (visible < total) {
+        fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+        visible = Math.min(visible + 20, total);
+        expectVisibleEntries();
+      }
+      const entries = screen.getAllByRole("button", { name: "Undo" }).map((button) => button.closest("article")!);
+      expect(entries.map((entry) => entry.querySelector("time")?.dateTime)).toEqual(history.map((action) => action.occurredAt));
+      fireEvent.click(within(entries.at(-1)!).getByRole("button", { name: "Undo" }));
+      await waitFor(() => expect(current.undo).toHaveBeenCalledWith(history.at(-1)));
+    }
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the history count accurate when entries are removed after loading more", () => {
+    const action = { id: "history-1", showId: show.id, episodeKeys: ["1"], action: "watched" as const,
+      before: { episodes: [], userState: "watching" as const }, after: { episodes: [], userState: "watching" as const }, occurredAt: "2026-01-01T12:00:00Z" };
+    const history = Array.from({ length: 21 }, (_, index) => ({ ...action, id: `history-${index}`, showId: `show-${index}` }));
+    const renderHistory = (entries: typeof history) => <MemoryRouter><WatchList tracker={tracker({ local: { ...tracker().local!, history: entries } })}/></MemoryRouter>;
+    const { rerender } = render(renderHistory(history));
+    fireEvent.click(screen.getByText(/Watched history/));
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    rerender(renderHistory(history.slice(0, 7)));
+    expect(screen.getByRole("status")).toHaveTextContent("Showing 7 of 7 shows");
+    document.querySelectorAll(".history-group > summary").forEach((summary) => fireEvent.click(summary));
+    expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(7);
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+
+    rerender(renderHistory([]));
+    expect(screen.getByText(/Episodes you mark watched will appear here/)).toBeVisible();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("shows ratings on Library cards only", () => {
@@ -166,11 +227,39 @@ describe("dashboard cards", () => {
 });
 
 describe("route-independent operation status", () => {
+  it("auto-detects Bingers by archive contents and reaches the existing preview", async () => {
+    const lookup = vi.spyOn(TvMazeProvider.prototype, "lookupByTvdbId").mockResolvedValue(domain.providerShows[0]!);
+    vi.spyOn(TvMazeProvider.prototype, "getEpisodes").mockResolvedValue(domain.episodes);
+    render(<MemoryRouter><ImportPage tracker={tracker()}/></MemoryRouter>);
+    const archive = bingersZip();
+    const file = { name: "export.zip", size: archive.byteLength, lastModified: 1,
+      arrayBuffer: async () => archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength) } as File;
+    fireEvent.change(document.querySelector("#import-files")!, { target: { files: [file] } });
+    await waitFor(() => expect(useImportStore.getState().phase).toBe("preview"));
+    expect(lookup).toHaveBeenCalledWith(10);
+    expect(screen.getByText("Bingers")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Import 1 show" })).toBeEnabled();
+    expect(useImportStore.getState().bingers?.shows).toHaveLength(1);
+  });
+
+  it("warns before analyzing overlapping Bingers and TV Time histories", async () => {
+    useImportStore.setState({ tvtime: { shows: [], specials: 0, specialFlagMismatches: 0, ignoredEntries: [] } });
+    const lookup = vi.spyOn(TvMazeProvider.prototype, "lookupByTvdbId");
+    render(<MemoryRouter><ImportPage tracker={tracker()}/></MemoryRouter>);
+    const archive = bingersZip();
+    fireEvent.change(document.querySelector("#import-files")!, { target: { files: [{ name: "bingers.zip", size: archive.byteLength, lastModified: 1,
+      arrayBuffer: async () => archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength) } as File] } });
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Import these one at a time" })).toBeVisible());
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
   it("explains both export sources and keeps files chosen in separate picker sessions", async () => {
     render(<MemoryRouter><ImportPage tracker={tracker()}/></MemoryRouter>);
     expect(screen.getByRole("heading", { name: "Get your export files" })).toBeVisible();
     expect(screen.getByRole("link", { name: /Open your IMDb lists/ })).toHaveAttribute("href", "https://www.imdb.com/profile/lists");
-    expect(screen.getByRole("link", { name: /Open TV Time data export/ })).toHaveAttribute("href", "https://gdpr.tvtime.com/gdpr/self-service");
+    expect(screen.getByRole("heading", { name: "Import from Refract, Bingers, or TV Time" })).toBeVisible();
+    expect(screen.getByText(/TV Time data exports are no longer available/)).toBeVisible();
+    expect(screen.queryByRole("link", { name: /Open TV Time data export/ })).not.toBeInTheDocument();
 
     const input = document.querySelector<HTMLInputElement>("#import-files")!;
     const silo = { name: "silo.csv", size: 70, lastModified: 1, text: async () => "Const,Title,Title Type,Created\ntt14688458,Silo,TV Series,2024-01-01" } as File;

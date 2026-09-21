@@ -30,16 +30,21 @@ async function runSynchronization(syncProvider: TelevisionProvider) {
   // One show failing (rate limit exhausted, transient network error, ...) must not stop every
   // other show behind it in the loop from being refreshed -- isolate failures per show instead.
   const failedIds = new Set<number>();
+  const refreshed = new Map<number, number>();
   for (const show of local.shows) {
     const id = show.externalIds.tvmazeShow;
     if (!id || !shouldRefreshMetadata(local.lastSyncAt, changed.get(id), show.providerUpdatedAt, storedById.get(id)?.metadataVersion)) continue;
     try {
-      const [metadata, episodes] = await Promise.all([syncProvider.getShow(id), syncProvider.getEpisodes(id)]);
-      if (metadata) await db.transaction("rw", db.providerShows, db.episodes, async () => {
+      const [metadata, episodes] = await Promise.all([
+        syncProvider.getShow(id, { forceRefresh: true }), syncProvider.getEpisodes(id, { forceRefresh: true }),
+      ]);
+      if (!metadata || metadata.updatedAt < (changed.get(id) ?? 0)) throw new Error("Updated show metadata is not available yet.");
+      await db.transaction("rw", db.providerShows, db.episodes, async () => {
         await db.providerShows.put(metadata);
         await db.episodes.where("showId").equals(id).delete();
         await db.episodes.bulkPut(episodes);
       });
+      refreshed.set(id, metadata.updatedAt);
     } catch {
       failedIds.add(id);
     }
@@ -47,15 +52,15 @@ async function runSynchronization(syncProvider: TelevisionProvider) {
   await updateLocalState((value) => {
     const { lastSyncFailure: _lastSyncFailure, ...current } = value;
     const checkedAt = new Date().toISOString();
-    return { ...current, lastSyncAt: checkedAt, shows: value.shows.map((show) => {
+    return { ...(failedIds.size > 0 ? value : current), ...(failedIds.size === 0 ? { lastSyncAt: checkedAt } : {}), shows: value.shows.map((show) => {
       const tvmazeId = show.externalIds.tvmazeShow;
       // Don't mark a show as up to date if its refresh failed -- leave it eligible so the next
       // sync (automatic retry or a manual "Check for updates") tries it again.
-      const updated = tvmazeId && !failedIds.has(tvmazeId) ? changed.get(tvmazeId) : undefined;
-      return updated ? { ...show, providerUpdatedAt: updated, updatedAt: checkedAt } : show;
+      const updated = tvmazeId ? refreshed.get(tvmazeId) : undefined;
+      return updated !== undefined ? { ...show, providerUpdatedAt: updated, updatedAt: checkedAt } : show;
     }) };
   });
-  await chrome.alarms.clear(METADATA_RETRY_ALARM);
+  if (failedIds.size === 0) await chrome.alarms.clear(METADATA_RETRY_ALARM);
   await recomputeBadgeAndReleaseAlarm();
   if (failedIds.size > 0) throw new Error(`${failedIds.size} show${failedIds.size === 1 ? "" : "s"} could not be refreshed.`);
 }
@@ -181,7 +186,8 @@ export async function pulseReleaseBadge(sleep = (ms: number) => new Promise((res
   }
 }
 
-export async function recomputeBadgeAndReleaseAlarm() {
+/** Returns the releases it found new, so callers need not scan the episode table a second time. */
+export async function recomputeBadgeAndReleaseAlarm(): Promise<NewRelease[]> {
   const [local, providerShows, episodes] = await Promise.all([readLocalState(), db.providerShows.toArray(), db.episodes.toArray()]);
   const state: DomainState = { shows: local.shows, progress: local.progress, settings: local.settings, providerShows, episodes };
   const count = selectWatchListShows(state).length;
@@ -198,4 +204,5 @@ export async function recomputeBadgeAndReleaseAlarm() {
     .filter((instant): instant is number => typeof instant === "number" && instant > now).sort((a, b) => a - b)[0];
   await chrome.alarms.clear(RELEASE_ALARM);
   if (nearest) await chrome.alarms.create(RELEASE_ALARM, { when: nearest });
+  return fresh;
 }

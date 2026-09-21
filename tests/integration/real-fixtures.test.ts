@@ -4,8 +4,18 @@ import { describe, expect, it } from "vitest";
 import { expandSplitTvTimeShows } from "../../src/imports/split-show-routes";
 import { parseRefractZip } from "../../src/imports/refract";
 import { parseTvTimeZip } from "../../src/imports/tvtime";
+import { parseBingersZip } from "../../src/imports/bingers";
 
 describe("supplied export fixtures", () => {
+  const bingersFixtureName = existsSync("initial-data") ? readdirSync("initial-data").find((name) => /^bingers-export-.*\.zip$/.test(name)) : undefined;
+  (bingersFixtureName ? it : it.skip)("parses the supplied Bingers archive with stable show IDs", () => {
+    const result = parseBingersZip(readFileSync(`initial-data/${bingersFixtureName}`));
+    expect(result.shows).toHaveLength(217);
+    expect(result.shows.every((show) => show.tvdbShowId && show.title)).toBe(true);
+    expect(result.shows.flatMap((show) => show.episodes)).toHaveLength(6263);
+    expect(result.specials).toBe(46);
+    expect(result.shows.filter((show) => show.status === "stopped")).toHaveLength(2);
+  });
   const gdprFixtureIt = existsSync("initial-data/gdpr-data.zip") ? it : it.skip;
   const refractFixtureName = existsSync("initial-data")
     ? readdirSync("initial-data").find((name) => /^refract-export-.*\.zip$/.test(name))

@@ -22,6 +22,7 @@ import {
   type ImportShowRecord,
 } from "../../imports/session";
 import { parseRefractZip, resolveRefractShows, RefractImportError } from "../../imports/refract";
+import { BingersImportError, parseBingersZip, resolveBingersShows } from "../../imports/bingers";
 import { parseTvTimeZip, TvTimeImportError } from "../../imports/tvtime";
 import { TvMazeProvider } from "../../providers/tvmaze/provider";
 import type { useTracker } from "../useTracker";
@@ -248,7 +249,7 @@ function FinalPreviewView({ preview, decisions, updateDecisions }: {
 }
 
 export function ImportPage({ tracker }: { tracker: Tracker }) {
-  const { phase, tvtime, refract, selectedFiles, analysis, decisions, preview, stageProgress, error, commitResult } = useImportStore();
+  const { phase, tvtime, refract, bingers, selectedFiles, analysis, decisions, preview, stageProgress, error, commitResult } = useImportStore();
   const backupRestore = useBackupRestore(tracker);
   const setPhase = (value: Phase) => useImportStore.setState({ phase: value });
   const setDecisions = (value: ImportDecisions) => useImportStore.setState({ decisions: value });
@@ -299,6 +300,7 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
     });
     let nextImdb = current.imdb;
     let nextTvtime = current.tvtime;
+    let nextBingers = current.bingers;
     let nextRefract = current.refract;
     let nextFiles = current.selectedFiles;
     try {
@@ -314,14 +316,21 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
         } else if (file.name.toLowerCase().endsWith(".zip")) {
           const bytes = new Uint8Array(await file.arrayBuffer());
           try {
-            nextRefract = parseRefractZip(bytes);
-            nextFiles = nextFiles.filter((selectedFile) => selectedFile.kind !== "refract");
-            selected = { key: fileKey(file), name: file.name, kind: "refract" };
+            nextBingers = parseBingersZip(bytes);
+            nextFiles = nextFiles.filter((selectedFile) => selectedFile.kind !== "bingers");
+            selected = { key: fileKey(file), name: file.name, kind: "bingers" };
           } catch (cause) {
-            if (!(cause instanceof RefractImportError) || cause.code !== "not_refract") throw cause;
-            nextTvtime = parseTvTimeZip(bytes);
-            nextFiles = nextFiles.filter((selectedFile) => selectedFile.kind !== "tvtime");
-            selected = { key: fileKey(file), name: file.name, kind: "tvtime" };
+            if (!(cause instanceof BingersImportError) || cause.code !== "not_bingers") throw cause;
+            try {
+              nextRefract = parseRefractZip(bytes);
+              nextFiles = nextFiles.filter((selectedFile) => selectedFile.kind !== "refract");
+              selected = { key: fileKey(file), name: file.name, kind: "refract" };
+            } catch (cause) {
+              if (!(cause instanceof RefractImportError) || cause.code !== "not_refract") throw cause;
+              nextTvtime = parseTvTimeZip(bytes);
+              nextFiles = nextFiles.filter((selectedFile) => selectedFile.kind !== "tvtime");
+              selected = { key: fileKey(file), name: file.name, kind: "tvtime" };
+            }
           }
         } else throw new Error(`Unsupported file: ${file.name}`);
         nextFiles = [...nextFiles, selected];
@@ -329,14 +338,14 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
         useImportStore.setState({ stageProgress: { stage: "validate_parse", completed: index + 1, total: additions.length, message: `Validated ${index + 1} of ${additions.length} files.` } });
       }
       if (currentOperation !== useImportStore.getState().operationId) return;
-      useImportStore.setState({ imdb: nextImdb, tvtime: nextTvtime, refract: nextRefract, selectedFiles: nextFiles, analysis: undefined, decisions: emptyImportDecisions(), preview: undefined, commitResult: undefined, phase: "parsed", stageProgress: undefined });
+      useImportStore.setState({ imdb: nextImdb, tvtime: nextTvtime, refract: nextRefract, bingers: nextBingers, selectedFiles: nextFiles, analysis: undefined, decisions: emptyImportDecisions(), preview: undefined, commitResult: undefined, phase: "parsed", stageProgress: undefined });
       // Two exports that both carry watch history describe the same shows twice, which
       // reconciliation can only read as a conflict. Stop and say so instead of running an
       // analysis whose every record needs excluding.
-      if (!(nextTvtime && nextRefract)) await runAnalysis();
+      if ([nextTvtime, nextRefract, nextBingers].filter(Boolean).length < 2) await runAnalysis();
     } catch (cause) {
       if (currentOperation !== useImportStore.getState().operationId) return;
-      const title = cause instanceof TvTimeImportError
+      const title = cause instanceof BingersImportError ? "Bingers import could not be parsed" : cause instanceof TvTimeImportError
         ? cause.code === "zip_validation" ? "ZIP validation failed" : cause.code === "schema" ? "TV Time schema could not be parsed" : "No TV Time shows were found"
         : cause instanceof RefractImportError
           ? cause.code === "zip_validation" ? "ZIP validation failed" : cause.code === "schema" ? "Refract schema could not be parsed" : "No Refract shows were found"
@@ -352,12 +361,19 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
   async function runAnalysis() {
     // Read through the store rather than the render closure: this runs immediately after
     // processFiles commits the parsed sources, when the closure still holds the old values.
-    const { imdb, tvtime, refract } = useImportStore.getState();
-    if (!imdb && !tvtime && !refract) return;
+    const { imdb, tvtime, refract, bingers } = useImportStore.getState();
+    if (!imdb && !tvtime && !refract && !bingers) return;
     const currentOperation = useImportStore.getState().operationId + 1;
     useImportStore.setState({ operationId: currentOperation, error: undefined, analysis: undefined, preview: undefined, commitResult: undefined, phase: "analyzing" });
     try {
       let combinedTvtime = tvtime;
+      if (bingers) {
+        useImportStore.setState({ stageProgress: { stage: "resolve_ids", completed: 0, total: bingers.shows.length, message: "Preparing Bingers shows for matching." } });
+        const resolved = await resolveBingersShows(bingers, importProvider);
+        if (currentOperation !== useImportStore.getState().operationId) return;
+        combinedTvtime = { shows: [...(tvtime?.shows ?? []), ...resolved.shows], specials: (tvtime?.specials ?? 0) + resolved.specials,
+          specialFlagMismatches: tvtime?.specialFlagMismatches ?? 0, ignoredEntries: [...(tvtime?.ignoredEntries ?? []), ...resolved.ignoredEntries] };
+      }
       if (refract) {
         // Refract shows have no stable external ID, so resolving each one to a TVMaze show via
         // search happens here, up front -- once resolved (or not), they're just TvTimeShow
@@ -369,10 +385,10 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
         });
         if (currentOperation !== useImportStore.getState().operationId) return;
         combinedTvtime = {
-          shows: [...(tvtime?.shows ?? []), ...resolved],
-          specials: tvtime?.specials ?? 0,
-          specialFlagMismatches: tvtime?.specialFlagMismatches ?? 0,
-          ignoredEntries: tvtime?.ignoredEntries ?? [],
+          shows: [...(combinedTvtime?.shows ?? []), ...resolved],
+          specials: combinedTvtime?.specials ?? 0,
+          specialFlagMismatches: combinedTvtime?.specialFlagMismatches ?? 0,
+          ignoredEntries: combinedTvtime?.ignoredEntries ?? [],
         };
       }
       const result = await analyzeImport({ selected: selectFullImportSources(imdb, combinedTvtime), provider: importProvider, settings: tracker.local!.settings,
@@ -430,18 +446,18 @@ export function ImportPage({ tracker }: { tracker: Tracker }) {
   return <><h1>Import</h1><p>Bring your existing show lists and watch history into the tracker. Your files are read locally and nothing is saved until you confirm.</p>
     {phase === "select" && <section className="import-guide" aria-labelledby="import-guide-title"><div className="import-guide-heading"><p className="eyebrow">Start here</p><h2 id="import-guide-title">Get your export files</h2><p>You can add files together or choose them one at a time from different folders. Each new selection stays in this import.</p></div><div className="import-guide-grid">
       <article><span className="guide-source" aria-hidden="true">IMDb</span><h3>Export an IMDb list</h3><ol><li>Sign in to IMDb on a desktop browser and open your Watchlist or another title list.</li><li>Click the 3 dots and select <strong>Export</strong> from the list.</li><li>Keep the downloaded <strong>CSV</strong> file. You may add multiple IMDb list CSVs.</li></ol><a href="https://www.imdb.com/profile/lists" target="_blank" rel="noreferrer">Open your IMDb lists <span aria-hidden="true">↗</span></a></article>
-      <article><span className="guide-source" aria-hidden="true">TV</span><h3>Download TV Time GDPR data</h3><ol><li>Open TV Time's GDPR self-service page and sign in.</li><li>Request or generate your account data, then wait until the download is ready.</li><li>Download <strong>gdpr-data.zip</strong> and leave it zipped. Legacy extension-export ZIPs are accepted too.</li></ol><a href="https://gdpr.tvtime.com/gdpr/self-service" target="_blank" rel="noreferrer">Open TV Time data export <span aria-hidden="true">↗</span></a></article>
+      <article><span className="guide-source" aria-hidden="true">TV</span><h3>Import from Refract, Bingers, or TV Time</h3><p>Upload your Refract or Bingers export ZIP, or a TV Time export you already have, and leave it zipped.</p><p>TV Time data exports are no longer available to request or download. You can still import a previously saved GDPR or legacy extension-export ZIP.</p></article>
     </div></section>}
-    <section className="report source-picker"><h2>Select files</h2><p>Choose one or several files. TV Time and Refract ZIP exports are both accepted and auto-detected. You can also drop a previously exported <strong>imdb-shows-tracker-*.json</strong> backup here to restore it directly.</p><label className={`file-drop ${operationBusy ? "disabled" : ""}`} htmlFor="import-files" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (!operationBusy) void processFiles(Array.from(event.dataTransfer.files)); }}><span aria-hidden="true">⇧</span><strong>{selectedFiles.length ? "Add more IMDb CSV or TV Time/Refract ZIP files" : "Drop IMDb CSV, TV Time/Refract ZIP, or a tracker backup JSON here"}</strong><small>or choose files from your computer</small><input id="import-files" type="file" multiple accept=".csv,.zip,.json" disabled={operationBusy} onChange={(event) => void choose(event)}/></label>
-      {selectedFiles.length > 0 && <div className="selected-files" aria-label="Selected files">{selectedFiles.map((file) => <span className="badge" key={file.key}><small>{file.kind === "imdb" ? "IMDb" : file.kind === "refract" ? "Refract" : "TV Time"}</small>{file.name}</span>)}</div>}{(phase !== "select" || operationBusy) && <button type="button" onClick={reset}>{operationBusy ? "Cancel current operation" : "Clear selected files"}</button>}
+    <section className="report source-picker"><h2>Select files</h2><p>Choose one or several files. TV Time, Refract, and Bingers ZIP exports are accepted and auto-detected. Keep Bingers exports zipped; library.csv and watches.csv are read together. You can also drop a previously exported <strong>imdb-shows-tracker-*.json</strong> backup here to restore it directly.</p><label className={`file-drop ${operationBusy ? "disabled" : ""}`} htmlFor="import-files" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); if (!operationBusy) void processFiles(Array.from(event.dataTransfer.files)); }}><span aria-hidden="true">⇧</span><strong>{selectedFiles.length ? "Add more IMDb CSV or TV Time/Refract/Bingers ZIP files" : "Drop IMDb CSV, TV Time/Refract/Bingers ZIP, or a tracker backup JSON here"}</strong><small>or choose files from your computer</small><input id="import-files" type="file" multiple accept=".csv,.zip,.json" disabled={operationBusy} onChange={(event) => void choose(event)}/></label>
+      {selectedFiles.length > 0 && <div className="selected-files" aria-label="Selected files">{selectedFiles.map((file) => <span className="badge" key={file.key}><small>{file.kind === "imdb" ? "IMDb" : file.kind === "refract" ? "Refract" : file.kind === "bingers" ? "Bingers" : "TV Time"}</small>{file.name}</span>)}</div>}{(phase !== "select" || operationBusy) && <button type="button" onClick={reset}>{operationBusy ? "Cancel current operation" : "Clear selected files"}</button>}
     </section>
     {backupRestore.pendingBackup && <RestorePreview backup={backupRestore.pendingBackup} onCancel={backupRestore.cancel} onConfirm={backupRestore.applyRestore}/>}
     {backupRestore.syncProgress ? <SyncProgress progress={backupRestore.syncProgress}/> : backupRestore.restoreMessage && <p className={backupRestore.restoreMessage.kind === "error" ? "error" : "success-message"} role="status">{backupRestore.restoreMessage.text}</p>}
     {busy && <>
     {error && <ErrorPanel title={error.title} message={error.message} retry={phase === "report" && analysis?.report.providerErrors.length ? () => void runAnalysis() : phase === "preview" ? () => void commit() : undefined}/>}
-    {phase === "parsed" && tvtime && refract && <section className="report warning-panel" role="alert">
+    {phase === "parsed" && [tvtime, refract, bingers].filter(Boolean).length > 1 && <section className="report warning-panel" role="alert">
       <h2>Import these one at a time</h2>
-      <p>Your TV Time and Refract exports both contain watch history, so most shows appear in both. Reconciliation can only treat the same show arriving twice as a conflict, and every one of them would have to be excluded by hand — importing nothing.</p>
+      <p>These exports each contain watch history. Shows appearing in more than one export may need conflict decisions. Importing one history source at a time is simpler; an IMDb list can be included alongside it.</p>
       <p className="muted">Clear one file above and import it on its own, then come back and import the other. Progress from the second import merges into the first.</p>
       <div className="import-actions"><button type="button" onClick={() => void runAnalysis()}>Import both anyway</button></div>
     </section>}

@@ -217,7 +217,7 @@ function scoreCandidate(candidate: ProviderShow, show: RefractShow) {
   return { acceptable, points: (originalExact ? 5 : titleExact ? 4 : 0) + (yearClose ? 2 : 0) };
 }
 
-async function resolveOne(show: RefractShow, resolver: RefractResolver): Promise<ProviderShow | undefined> {
+export async function resolveShowByTitle(show: RefractShow, resolver: RefractResolver): Promise<ProviderShow | undefined> {
   // TVMaze indexes many non-English shows only under their native title, and some titles only
   // without their subtitle ("Demon Slayer" for "Demon Slayer: Kimetsu no Yaiba").
   const stem = show.title.split(/[:\-–—]/)[0]!.trim();
@@ -265,7 +265,7 @@ export async function resolveRefractShows(
   let completed = 0;
   onProgress?.(0, total);
   return Promise.all(parsed.shows.map(async (show) => {
-    const match = await resolveOne(show, resolver);
+    const match = await resolveShowByTitle(show, resolver);
     onProgress?.(++completed, total);
     const episodes = parsed.episodesByShow.get(show.key) ?? [];
     return {

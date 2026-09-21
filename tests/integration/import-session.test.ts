@@ -9,6 +9,9 @@ import { analyzeImport, selectFullImportSources, type SelectedImportSources } fr
 import { parseTvTimeZip, type TvTimeShow } from "../../src/imports/tvtime";
 import { db } from "../../src/storage/database";
 import { emptyLocalState, type LocalState } from "../../src/storage/local-state";
+import { localStateSchema } from "../../src/storage/local-state";
+import { parseBingersZip } from "../../src/imports/bingers";
+import { bingersZip } from "../fixtures/bingers";
 
 const settings = { timezone: "UTC", dateOnlyReleaseHour: "09:00", notifications: true };
 const now = new Date("2025-01-10T12:00:00Z");
@@ -94,6 +97,24 @@ beforeEach(async () => {
 });
 
 describe("staged import analysis and commit", () => {
+  it("merges Bingers with IMDb, fills watched gaps and keeps newer local progress on reimport", async () => {
+    const parsed = parseBingersZip(bingersZip());
+    const provider = new FakeProvider();
+    const analysis = await analyzeImport({ selected: selected([imdbRow()], parsed.shows), provider, settings, now });
+    const decisions = emptyImportDecisions();
+    await commitImport(analysis, buildImportPreview(analysis, decisions, { ...emptyLocalState(), settings }), decisions);
+    expect(stored?.shows).toHaveLength(1);
+    expect(stored?.progress).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tvmazeEpisodeId: 1, watched: true, source: "backfill" }),
+      expect.objectContaining({ tvmazeEpisodeId: 2, watched: true, watchedAt: "2025-01-04T00:00:00.000Z", rewatchCount: 1 }),
+    ]));
+    expect(stored?.progress.some((entry) => entry.tvmazeEpisodeId === 3)).toBe(false);
+    expect(localStateSchema.safeParse(stored).success).toBe(true);
+    stored!.progress = stored!.progress.map((entry) => entry.tvmazeEpisodeId === 2 ? { ...entry, watched: false, source: "user" } : entry);
+    await commitImport(analysis, buildImportPreview(analysis, decisions, stored!), decisions);
+    expect(stored?.shows).toHaveLength(1);
+    expect(stored?.progress.find((entry) => entry.tvmazeEpisodeId === 2)).toMatchObject({ watched: false, source: "user" });
+  });
   it("merges exact IMDb and TVDB resolutions and applies active TV Time progress", async () => {
     const analysis = await analyzeImport({ selected: selected(), provider: new FakeProvider(), settings, now });
 

@@ -115,9 +115,26 @@ main { width: min(1500px, 100%); margin: auto; padding: 42px 30px 80px; }
 .empty { display: grid; min-height: 260px; place-content: center; justify-items: center; padding: 42px 20px; border: 1px dashed #44444c; border-radius: var(--radius-lg); color: var(--muted); text-align: center; }
 .empty-icon { color: var(--accent); font-size: 32px; }.empty h2 { margin: 10px 0 4px; color: var(--text); }.empty p { margin: 0; }
 .history { margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--line); }
-.history summary { cursor: pointer; font-weight: 800; text-transform: uppercase; }.history summary span { display: inline-grid; min-width: 24px; min-height: 24px; place-items: center; margin-left: 7px; border-radius: var(--radius-pill); background: var(--surface-soft); color: var(--accent); font-size: 11px; }
+.history > summary { cursor: pointer; font-weight: 800; text-transform: uppercase; }.history > summary span { display: inline-grid; min-width: 24px; min-height: 24px; place-items: center; margin-left: 7px; border-radius: var(--radius-pill); background: var(--surface-soft); color: var(--accent); font-size: 11px; }
+.history-group { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.history-group > summary { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; overflow-wrap: anywhere; list-style: none; }
+.history-group > summary::-webkit-details-marker { display: none; }
+.history-group > summary::after { content: "›"; color: var(--muted); font-size: 24px; }
+.history-group[open] > summary::after { transform: rotate(90deg); }
+.history-group > summary .poster { width: 42px; border-radius: var(--radius-sm); }
+.history-group .poster-fallback .tv-glyph { display: none; }
+.history-group-copy { min-width: 0; }
+.history-group > summary strong { font-size: 14px; }
+.history-group > summary small { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
+.history-group > .history-entry { margin: 0 12px; }
+.history-group > .history-entry:last-child { border-bottom: 0; }
 .history-entry { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto auto; align-items: center; gap: 13px; padding: 13px 4px; border-bottom: 1px solid #29292e; }.history-mark { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 50%; background: #294c32; color: #a8e8b7; }.history-copy { display: grid; gap: 4px; }.history-copy strong { font-size: 14px; }.history-copy span, .history time { color: var(--muted); font-size: 12px; }.history-entry button { min-height: 36px; padding: 5px 12px; }
 .history-empty { margin: 15px 0 0; padding: 18px; border-radius: var(--radius-md); background: var(--surface); color: var(--muted); }
+.history-count { color: var(--muted); font-size: 12px; }
+.history-load-more { margin-top: 16px; }
+.history-entry > .async-control { display: contents; }
+.history-entry .async-button { grid-column: -2 / -1; grid-row: 1; justify-self: end; }
+.history-entry .button-feedback { position: static; grid-column: 2 / -1; width: auto; max-width: none; overflow-wrap: anywhere; box-shadow: none; }
 
 .library-tools { display: grid; gap: 15px; margin-bottom: 24px; }
 .library-primary-tools { display: flex; align-items: center; gap: 12px; }.library-primary-tools .search { flex: 1; }.library-primary-tools .primary { flex: 0 0 auto; white-space: nowrap; }.library-sort { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 8px; margin-left: auto; color: var(--muted); font-size: 11px; font-weight: 750; }.library-sort::after { position: absolute; top: 50%; right: 16px; width: 7px; height: 7px; border-right: 2px solid #cfcfd5; border-bottom: 2px solid #cfcfd5; content: ""; pointer-events: none; transform: translateY(-65%) rotate(45deg); }.library-sort select { min-height: 44px; padding: 7px 42px 7px 12px; appearance: none; border: 1px solid #4a4a52; border-radius: var(--radius-pill); background: var(--surface); color: white; }

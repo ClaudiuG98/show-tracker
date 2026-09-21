@@ -2,7 +2,7 @@ import { requestSchema } from "../src/messaging/messages";
 import { LOCAL_STATE_KEY, readLocalState, updateLocalState } from "../src/storage/local-state";
 import { db } from "../src/storage/database";
 import { TvMazeProvider } from "../src/providers/tvmaze/provider";
-import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, RELEASE_ALARM, ensureSyncAlarms, newReleasesSinceSeen, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, runAutomaticSynchronization, synchronize } from "../src/scheduling/sync";
+import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, RELEASE_ALARM, ensureDailySyncAlarm, ensureMetadataRetryAlarm, ensureSyncAlarms, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, runAutomaticSynchronization, synchronize } from "../src/scheduling/sync";
 import { selectWatchListShows } from "../src/domain/selectors";
 
 const dashboardUrl = (route = "/") => chrome.runtime.getURL(`/dashboard.html#${route}`);
@@ -16,9 +16,9 @@ export default defineBackground(() => {
   // alarm that is no longer in the future -- so an episode that aired while the browser was
   // closed would have its pending alarm wiped before it could ever fire. Catch up on startup.
   chrome.runtime.onStartup.addListener(() => safely("Could not restore the badge after browser startup.", (async () => {
-    await ensureSyncAlarms();
-    const [local, episodes] = await Promise.all([readLocalState(), db.episodes.toArray()]);
-    if (newReleasesSinceSeen(local, episodes).length > 0) await pulseReleaseBadge();
+    await ensureDailySyncAlarm();
+    await ensureMetadataRetryAlarm();
+    if ((await recomputeBadgeAndReleaseAlarm()).length > 0) await pulseReleaseBadge();
   })()));
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === "local" && changes[LOCAL_STATE_KEY]) {
@@ -30,11 +30,16 @@ export default defineBackground(() => {
     if (alarm.name === DAILY_SYNC_ALARM) safely("Automatic metadata check failed.", runAutomaticSynchronization("daily"));
     else if (alarm.name === METADATA_RETRY_ALARM) safely("Automatic metadata retry failed.", runAutomaticSynchronization("retry"));
     else if (alarm.name === RELEASE_ALARM) safely("Could not update the release badge.", (async () => {
-      await recomputeBadgeAndReleaseAlarm();
-      const [local, episodes] = await Promise.all([readLocalState(), db.episodes.toArray()]);
-      if (newReleasesSinceSeen(local, episodes).length > 0) await pulseReleaseBadge();
+      if ((await recomputeBadgeAndReleaseAlarm()).length > 0) await pulseReleaseBadge();
     })());
   });
+  // Chrome wipes the action badge whenever the browser restarts, and onStartup is not a reliable
+  // place to put it back: it never fires when the profile is restored after a crash, nor when a
+  // background process kept the previous session alive, and its async work can be cut short if
+  // the service worker is torn down mid-scan. This body re-runs every time the worker starts, for
+  // any reason, so the badge is restored on every path rather than one of them.
+  safely("Could not restore the badge.", recomputeBadgeAndReleaseAlarm());
+
   chrome.runtime.onMessage.addListener((raw, sender, respond) => {
     const parsed = requestSchema.safeParse(raw);
     if (!parsed.success) { respond({ ok: false, error: "Invalid request" }); return false; }

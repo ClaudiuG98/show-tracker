@@ -1,4 +1,4 @@
-import type { ProviderAlternateEpisodeMapping, ProviderEpisode, ProviderShow, ProviderStatus, TelevisionProvider } from "../../domain/models";
+import type { ProviderAlternateEpisodeMapping, ProviderEpisode, ProviderFetchOptions, ProviderShow, ProviderStatus, TelevisionProvider } from "../../domain/models";
 import { db, type CacheEntry } from "../../storage/database";
 import { tvMazeRequest, type TvMazeRequest } from "./client";
 import { tvMazeAlternateEpisodeSchema, tvMazeAlternateListSchema, tvMazeEpisodeSchema, tvMazeSearchResultSchema, tvMazeShowSchema } from "./schemas";
@@ -183,8 +183,8 @@ export class TvMazeProvider implements TelevisionProvider {
     await Promise.all([...keys].map((key) => this.writeCache(key, raw, TVMAZE_CACHE_TTL.exactLookupMs)));
   }
 
-  private async exactLookup(path: string, key: string) {
-    const cached = await this.readCache(key, normalizeShow);
+  private async exactLookup(path: string, key: string, options?: ProviderFetchOptions) {
+    const cached = options?.forceRefresh ? undefined : await this.readCache(key, normalizeShow);
     if (cached) return cached;
     const raw = await this.request(path);
     if (raw === null) return null;
@@ -201,13 +201,13 @@ export class TvMazeProvider implements TelevisionProvider {
     return this.exactLookup(`/lookup/shows?thetvdb=${id}`, tvdbCacheKey(id));
   }
 
-  async getShow(id: number) {
-    return this.exactLookup(`/shows/${id}`, showCacheKey(id));
+  async getShow(id: number, options?: ProviderFetchOptions) {
+    return this.exactLookup(`/shows/${id}`, showCacheKey(id), options);
   }
 
-  async getEpisodes(showId: number): Promise<ProviderEpisode[]> {
+  async getEpisodes(showId: number, options?: ProviderFetchOptions): Promise<ProviderEpisode[]> {
     const key = episodesCacheKey(showId);
-    const cached = await this.readCache(key, (value) => normalizeEpisodes(value, showId));
+    const cached = options?.forceRefresh ? undefined : await this.readCache(key, (value) => normalizeEpisodes(value, showId));
     if (cached) return cached;
     const raw = await this.request(`/shows/${showId}/episodes`);
     if (raw === null) {
