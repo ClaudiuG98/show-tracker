@@ -17,9 +17,7 @@ Keep track of your TV shows, the episodes you have watched, and what is coming n
 
 Screenshots show example library progress and schedules captured at the time.
 
-## Install in Chrome — no coding needed
-
-This extension is installed manually from GitHub, not from the Chrome Web Store. These instructions are for **Chrome on a computer**. You do not need a GitHub account or any development software to install a ready-made release.
+## Install in Chrome
 
 ### 1. Download the extension
 
