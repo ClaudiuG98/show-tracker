@@ -127,13 +127,3 @@ This is a personal project shared as-is. Regular feature updates are not planned
 GitHub downloads do not automatically install new extension versions. If a replacement release is ever provided, export a backup first, replace the extension files in the **same installation folder**, then click the extension's reload button at `chrome://extensions` and refresh the dashboard. Do not uninstall it just to update it.
 
 For Firefox, install the newer signed `.xpi` over the existing extension without uninstalling it. Releases must keep the same add-on ID to preserve the library.
-
-## Building and testing
-
-With Node.js 22 or newer, run `npm ci`, then `npm run typecheck`, `npm run lint`, and `npm run test`.
-
-- Chrome: `npm run zip` builds `.output/chrome-mv3` and the Chrome release ZIP.
-- Firefox: `npm run zip:firefox` builds `.output/firefox-mv3`, an **unsigned** Firefox ZIP, and a source ZIP. For local testing, open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on…**, and select the built `manifest.json`. Temporary installs disappear when Firefox closes.
-- Browser tests: `npm run test:e2e` tests the Chrome build. `npm run test:firefox` tests the Firefox build using Firefox and Mozilla's geckodriver; set `FIREFOX_BINARY` and `GECKODRIVER` to their executable paths (on Windows, the defaults are the standard Firefox installation and `.output/tools/geckodriver.exe`). Tests use a separate temporary profile, not your library.
-
-To distribute Firefox releases, open Mozilla's [Submit a New Add-on page](https://addons.mozilla.org/developers/addon/submit/distribution), choose **On your own** (unlisted), and upload the Firefox ZIP. Also provide the generated source ZIP and the build command `npm ci && npm run build:firefox`. Download the signed `.xpi` and attach that to the GitHub release. Signing is free; uploading the unsigned ZIP to GitHub is not a substitute. Source packages exclude private exports in `initial-data`.
