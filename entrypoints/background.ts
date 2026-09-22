@@ -4,13 +4,27 @@ import { db } from "../src/storage/database";
 import { TvMazeProvider } from "../src/providers/tvmaze/provider";
 import { DAILY_SYNC_ALARM, METADATA_RETRY_ALARM, RELEASE_ALARM, ensureDailySyncAlarm, ensureMetadataRetryAlarm, ensureSyncAlarms, pulseReleaseBadge, recomputeBadgeAndReleaseAlarm, runAutomaticSynchronization, synchronize } from "../src/scheduling/sync";
 import { selectWatchListShows } from "../src/domain/selectors";
+import { BACKUP_ALARM, runAutomaticBackup } from "../src/backup/automatic";
 
 const dashboardUrl = (route = "/") => chrome.runtime.getURL(`/dashboard.html#${route}`);
 
 export default defineBackground(() => {
   const safely = (label: string, operation: Promise<unknown>) => void operation.catch((error: unknown) => {
-    console.warn(`[TV Show Tracker] ${label}`, error);
+    console.warn(`[Show Tracker] ${label}`, error);
   });
+  const checkBackups = () => safely("Automatic backup check failed.", runAutomaticBackup());
+  chrome.runtime.onInstalled.addListener(checkBackups);
+  chrome.runtime.onStartup.addListener(checkBackups);
+  let downloadsListening = false;
+  const listenForDownloads = () => {
+    if (chrome.downloads?.onChanged && !downloadsListening) {
+      chrome.downloads.onChanged.addListener((change) => { if (change.state) checkBackups(); });
+      downloadsListening = true;
+    }
+  };
+  listenForDownloads();
+  chrome.permissions.onAdded.addListener(listenForDownloads);
+  checkBackups();
   chrome.runtime.onInstalled.addListener(() => safely("Could not initialize background alarms after installation.", ensureSyncAlarms()));
   // The release alarm is a one-shot set for the next episode, and ensureSyncAlarms clears any
   // alarm that is no longer in the future -- so an episode that aired while the browser was
@@ -27,7 +41,8 @@ export default defineBackground(() => {
   });
   chrome.action.onClicked.addListener(() => void chrome.tabs.create({ url: dashboardUrl() }));
   chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === DAILY_SYNC_ALARM) safely("Automatic metadata check failed.", runAutomaticSynchronization("daily"));
+    if (alarm.name === BACKUP_ALARM) checkBackups();
+    else if (alarm.name === DAILY_SYNC_ALARM) safely("Automatic metadata check failed.", runAutomaticSynchronization("daily"));
     else if (alarm.name === METADATA_RETRY_ALARM) safely("Automatic metadata retry failed.", runAutomaticSynchronization("retry"));
     else if (alarm.name === RELEASE_ALARM) safely("Could not update the release badge.", (async () => {
       if ((await recomputeBadgeAndReleaseAlarm()).length > 0) await pulseReleaseBadge();
@@ -41,6 +56,11 @@ export default defineBackground(() => {
   safely("Could not restore the badge.", recomputeBadgeAndReleaseAlarm());
 
   chrome.runtime.onMessage.addListener((raw, sender, respond) => {
+    if (raw?.type === "AUTO_BACKUP_RUN") {
+      if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL("/"))) { respond({ ok: false, error: "Untrusted sender" }); return false; }
+      void runAutomaticBackup(raw.force === true).then(() => respond({ ok: true })).catch(() => respond({ ok: false, error: "Could not run automatic backup." }));
+      return true;
+    }
     const parsed = requestSchema.safeParse(raw);
     if (!parsed.success) { respond({ ok: false, error: "Invalid request" }); return false; }
     if (sender.url?.startsWith("https://www.imdb.com/") === false && sender.id !== chrome.runtime.id) { respond({ ok: false, error: "Untrusted sender" }); return false; }

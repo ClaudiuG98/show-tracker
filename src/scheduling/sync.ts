@@ -153,7 +153,7 @@ export function newReleasesSinceSeen(local: LocalState, episodes: ProviderEpisod
 }
 
 export function releaseTooltip(fresh: NewRelease[]) {
-  if (fresh.length === 0) return "Open TV Show Tracker";
+  if (fresh.length === 0) return "Open Show Tracker";
   const lines = fresh.slice(0, 3).map(({ show, episode }) =>
     `${show.titleSnapshot} — S${String(episode.season).padStart(2, "0")} · E${String(episode.number).padStart(2, "0")}`);
   if (fresh.length > 3) lines.push(`and ${fresh.length - 3} more`);

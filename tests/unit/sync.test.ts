@@ -342,7 +342,7 @@ describe("in-browser release cues", () => {
     expect(releaseTooltip(fresh).split("\n")).toEqual([
       "4 new episodes", "Show 10 — S03 · E01", "Show 11 — S03 · E02", "Show 12 — S03 · E03", "and 1 more",
     ]);
-    expect(releaseTooltip([])).toBe("Open TV Show Tracker");
+    expect(releaseTooltip([])).toBe("Open Show Tracker");
   });
 
   it("marks the badge instead of showing the waiting count until the releases have been seen", async () => {

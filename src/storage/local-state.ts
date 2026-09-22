@@ -38,7 +38,7 @@ export const emptyLocalState = (): LocalState => ({
   schemaVersion: LOCAL_SCHEMA_VERSION, shows: [], progress: [], history: [], settings: DEFAULT_SETTINGS,
 });
 
-const STATE_WRITE_LOCK = "imdb-shows-tracker:local-state-writer";
+const STATE_WRITE_LOCK = "show-tracker:local-state-writer";
 let fallbackWriter = Promise.resolve();
 
 async function serializedWrite<T>(operation: () => Promise<T>): Promise<T> {
